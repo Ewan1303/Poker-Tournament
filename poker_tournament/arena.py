@@ -193,6 +193,7 @@ class TableSession:
         self.result: dict | None = None
         self.seed = secrets.randbelow(2**63)
         self.shadows: list[_Shadow] = []
+        self.last_comparison: dict | None = None  # the latest hand's replay results
         self._hand_log = HandLog(hand_log, full_info=True) if hand_log else None
         self._thread = threading.Thread(target=self._run, name="poker-table", daemon=True)
 
@@ -346,14 +347,14 @@ class TableSession:
         if not self.shadows:
             return None
         big = self.config.big_blind
-        hands = self.hands_played
         you = self.your_seat
-        last = self.result.get("comparison") if self.result else None
+        last = self.last_comparison  # stays up until the next hand's replays are done
         rows = [
             {
                 "name": self.names[you],
                 "you": True,
                 "total": self.totals[you],
+                "hands": self.hands_played,
                 "last": last["you"] if last else None,
             }
         ]
@@ -363,14 +364,15 @@ class TableSession:
                     "name": shadow.name,
                     "you": False,
                     "total": shadow.total,
+                    "hands": shadow.hands,
                     "last": last["bots"].get(shadow.name) if last else None,
                     "errors": shadow.errors,
                 }
             )
         for row in rows:
-            row["bb_per_100"] = 100 * row["total"] / big / hands if hands else 0.0
+            row["bb_per_100"] = 100 * row["total"] / big / row["hands"] if row["hands"] else 0.0
         rows.sort(key=lambda r: r["total"], reverse=True)
-        return {"hands": hands, "rows": rows}
+        return {"hands": self.hands_played, "last_hand": last["hand"] if last else None, "rows": rows}
 
     # -- the game -------------------------------------------------------------
 
@@ -548,7 +550,8 @@ class TableSession:
                 return
         with self._cond:
             you = hand.winnings[active.index(self.your_seat)]
-            self.result["comparison"] = {"you": you, "bots": bots}
+            self.last_comparison = {"hand": hand.hand_id, "you": you, "bots": bots}
+            self.result["comparison"] = self.last_comparison
             self._publish()
 
     def _note_board(self, dealt_before: int) -> None:
