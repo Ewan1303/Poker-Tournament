@@ -66,8 +66,8 @@ poker run submissions/round-1 --name round-1 --hands 1000 --workers 4
 ```
 
 - Every pair of bots plays 1,000 deals from both seats. With 10 bots that's 45 matches and 90,000 hands. Time depends on how fast the bots are, so try `--hands 50` first, then scale up. `--workers` runs that many matches at once. Use about half your CPU cores, so each bot gets a core of its own.
-- **The card seed is random and secret.** The shuffle code is public, so a bot that knew the seed could work out the whole deck. Don't pass `--seed` for a real round. The seed is saved in `results/round-1/run.json`, so you can publish it afterwards and anyone can replay the deals.
-- If a run stops part way (a crash, a reboot, Ctrl+C), run the same command with `--resume`. Finished matches are kept, and it reuses the same seed.
+- **The card seed is random and secret.** The shuffle code is public, so a bot that knew the seed could work out the whole deck. Don't pass `--seed` when starting a real round. The seed is printed when the run starts, so note it down, but nothing a bot could read contains it until the round is over. Then it's saved in `results/round-1/run.json` and `results.json`, so anyone can replay the deals.
+- If a run stops part way (a crash, a reboot, Ctrl+C), run the same command with `--resume --seed <the seed it printed>`. Finished pairings are kept. Ctrl+C stops the bots straight away.
 - To show where everyone stands against the built-in bots, add them: `poker run submissions/round-1 bots/equity_bot bots/ml_example --name round-1`.
 - `--format both` adds the sit-and-go side event (`--games 60 --table-size 6`).
 
@@ -77,7 +77,7 @@ Everything goes into `results/round-1/`:
 |---|---|
 | `leaderboard.md` | The rankings, head-to-head table and any bot errors |
 | `results.json` | The same data, plus per-bot timing and error details |
-| `run.json` | The settings and seed used |
+| `run.json` | The settings used, plus the seed once the round has finished |
 | `hands/` | Hand histories, one gzipped JSON line per hand. Only cards shown at showdown appear; use `--full-hand-logs` to keep every hole card for yourself |
 | `logs/` | Anything each bot printed, with tracebacks for its errors |
 

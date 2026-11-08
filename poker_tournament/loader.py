@@ -120,13 +120,24 @@ def load_bot_class(bot_dir: str | Path, module_name: str | None = None) -> type:
     bot_file = bot_dir / "bot.py"
     if not bot_file.is_file():
         raise BotLoadError(f"{bot_dir} has no bot.py")
-    if str(bot_dir) not in sys.path:
-        sys.path.insert(0, str(bot_dir))  # so the bot can import its own helper modules
+    # Put the bot's folder first on the path so it imports its own helper modules.
+    if str(bot_dir) in sys.path:
+        sys.path.remove(str(bot_dir))
+    sys.path.insert(0, str(bot_dir))
+    shared = module_name is None  # loading into a process that may hold other bots
+    before = set(sys.modules)
     name = module_name or f"_poker_bot_{next(_module_ids)}"
     spec = importlib.util.spec_from_file_location(name, bot_file)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    if shared:
+        # Forget this bot's helper modules once it has them, so another bot with a
+        # helper of the same name (say utils.py) imports its own rather than this one.
+        for loaded in set(sys.modules) - before - {name}:
+            file = getattr(sys.modules[loaded], "__file__", None)
+            if file and Path(file).resolve().is_relative_to(bot_dir):
+                del sys.modules[loaded]
     cls = getattr(module, "Bot", None)
     if cls is None:
         found = [

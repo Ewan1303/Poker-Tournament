@@ -80,7 +80,7 @@ def collect(entries_csv: str | Path, out_dir: str | Path, ref: str | None = None
             root = find_bot_root(dest / row["subdir"] if row.get("subdir") else dest)
             if root is None:
                 raise BotLoadError("no bot.py found (or several: add a subdir column saying which)")
-            info["bot_dir"] = str(root)
+            info["bot_dir"] = root.relative_to(out_dir).as_posix()  # relative, so it works from anywhere
             detail = f" @ {info['commit'][:8]} ({info['commit_date'][:16]})" if "commit" in info else ""
             echo(f"  OK    {name}: {source}{detail}")
         except (BotLoadError, OSError) as exc:

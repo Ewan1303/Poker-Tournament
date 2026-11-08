@@ -32,7 +32,8 @@ _live_processes: set[subprocess.Popen] = set()
 
 
 @atexit.register
-def _kill_leftovers() -> None:
+def kill_all_bots() -> None:
+    """Stop every bot process still running (used when a run is interrupted)."""
     for proc in list(_live_processes):
         if proc.poll() is None:
             proc.kill()
@@ -154,6 +155,7 @@ class ProcessBot(BotPlayer):
         self._proc: subprocess.Popen | None = None
         self._inbox: queue.Queue = queue.Queue()
         self._next_id = 0
+        self._awaiting: int | None = None  # a request the bot hasn't answered yet
         self._output: deque[str] = deque()
         self._output_chars = 0
         self._output_dropped = False
@@ -172,6 +174,11 @@ class ProcessBot(BotPlayer):
         env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
             env.setdefault(var, "1")  # one core per bot, so parallel matches stay fair
+        # Keep Ctrl+C in the console from reaching bots: the tournament stops them itself.
+        if os.name == "nt":
+            detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        else:
+            detach = {"start_new_session": True}
         try:
             self._proc = subprocess.Popen(
                 [sys.executable, "-P", "-m", "poker_tournament.runner", str(self.path)],
@@ -184,6 +191,7 @@ class ProcessBot(BotPlayer):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **detach,
             )
         except OSError as exc:
             self._cut_off(f"could not start a process for the bot: {exc}")
@@ -226,7 +234,7 @@ class ProcessBot(BotPlayer):
     def close(self) -> None:
         proc = self._proc
         if proc is not None:
-            if proc.poll() is None:
+            if proc.poll() is None and self._awaiting is None:  # a busy bot isn't reading: just stop it
                 try:
                     proc.stdin.write('{"type":"shutdown"}\n')
                     proc.stdin.flush()
@@ -278,9 +286,11 @@ class ProcessBot(BotPlayer):
                 line = line.strip()
                 if line:
                     try:
-                        self._inbox.put(json.loads(line))
+                        message = json.loads(line)
                     except json.JSONDecodeError:
-                        pass
+                        continue
+                    if isinstance(message, dict):
+                        self._inbox.put(message)
         except (OSError, ValueError):
             pass
         self._inbox.put(_EOF)
@@ -304,6 +314,18 @@ class ProcessBot(BotPlayer):
     def _request(self, kind: str, key: str, payload: dict, timeout: float) -> dict | None:
         if self.dead or self._proc is None:
             return None
+        if self._awaiting is not None:
+            # Still busy with a request that timed out. Never queue more behind it (a stuck
+            # bot would fill the pipe and block us); give it this request's time to catch up.
+            status, _ = self._receive(self._awaiting, timeout)
+            if status == "eof":
+                self._cut_off("the bot process stopped (crashed or exited)")
+                return None
+            if status == "timeout":
+                self.stats.timeouts += 1
+                self._fail(f"still busy with an earlier message, so it missed '{kind}'")
+                return None
+            self._awaiting = None
         self._next_id += 1
         message_id = self._next_id
         try:
@@ -317,6 +339,7 @@ class ProcessBot(BotPlayer):
             self._cut_off("the bot process stopped (crashed or exited)")
             return None
         if status == "timeout":
+            self._awaiting = message_id
             self.stats.timeouts += 1
             self._fail(f"no reply to '{kind}' within {timeout:g}s")
             return None

@@ -120,8 +120,16 @@ def _cmd_run(args) -> int:
     out_dir = Path(args.out) / name
     seed = args.seed
     saved_run = out_dir / "run.json"
-    if seed is None and args.resume and saved_run.exists():
-        seed = json.loads(saved_run.read_text(encoding="utf-8"))["seed"]
+    if args.resume and saved_run.exists():
+        saved = json.loads(saved_run.read_text(encoding="utf-8"))
+        if seed is None:
+            seed = saved.get("seed")  # only written once a run has finished
+        if seed is None:
+            print("error: to resume, pass the run's seed with --seed (it was printed when the run started)", file=sys.stderr)
+            return 2
+        if saved.get("seed_hash") and TournamentConfig(name=name, seed=seed).seed_hash() != saved["seed_hash"]:
+            print(f"error: seed {seed} isn't the one '{name}' was started with", file=sys.stderr)
+            return 2
     if seed is None:
         # The shuffle code is public, so a known seed would let a bot work out the deck.
         seed = secrets.randbelow(2**63)
@@ -144,7 +152,9 @@ def _cmd_run(args) -> int:
         full_info_logs=args.full_hand_logs,
     )
     print(f"Tournament '{name}' with {len(entries)} bots: {', '.join(e.name for e in entries)}")
-    print(f"Card seed {seed} (kept in {saved_run.as_posix()}; --resume reuses it)")
+    print(f"Card seed: {seed}")
+    print("  Keep it to yourself until the round is over, but note it down: to pick up an interrupted run,")
+    print(f"  use the same command with --resume --seed {seed}. It's saved with the results at the end.")
     print(f"Results go to {out_dir}")
     summary = run_tournament(entries, config, out_dir, resume=args.resume)
     print()

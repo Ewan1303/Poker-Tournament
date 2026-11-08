@@ -285,13 +285,12 @@ def play_sng(
     stacks = [stack] * n
     places = [0.0] * n
     button = random.Random(f"{seed}:button").randrange(n)
+    big_blind_seat = None
     hand_no = 0
     while sum(1 for s in stacks if s > 0) > 1 and hand_no < max_hands:
         small, big = levels[min(hand_no // hands_per_level, len(levels) - 1)]
         if hand_no:
-            button = (button + 1) % n
-            while stacks[button] == 0:
-                button = (button + 1) % n
+            button = next_button(stacks, button, big_blind_seat)
         active = [i for i in range(n) if stacks[i] > 0]
         before = {i: stacks[i] for i in active}
         hand = play_hand(
@@ -305,19 +304,39 @@ def play_sng(
         )
         for k, i in enumerate(active):
             stacks[i] = hand.seats[k].stack
+        big_blind_seat = active[big_blind_of(hand)]
         hand_no += 1
         if hand_log:
             hand_log.write(hand, **(log_extra or {}))
         busted = [i for i in active if stacks[i] == 0]
         if busted:
             alive = sum(1 for s in stacks if s > 0)
-            _assign_places(places, busted, alive + 1, lambda i: before[i])
+            assign_places(places, busted, alive + 1, lambda i: before[i])
     remaining = [i for i in range(n) if stacks[i] > 0]
-    _assign_places(places, remaining, 1, lambda i: stacks[i])
+    assign_places(places, remaining, 1, lambda i: stacks[i])
     return {"names": names, "places": places, "hands": hand_no, "stacks": stacks}
 
 
-def _assign_places(places: list[float], seats: list[int], first_place: int, key: Callable[[int], int]) -> None:
+def big_blind_of(hand: Hand) -> int:
+    """The seat that posted the big blind in `hand`."""
+    return next(event["seat"] for event in hand.history if event["action"] == "big_blind")
+
+
+def next_button(stacks: Sequence[int], button: int, last_big_blind: int | None = None) -> int:
+    """Where the button goes for the next hand of a sit-and-go: the next player
+    still in, except that heads-up the player who just posted the big blind takes
+    the button (and so the small blind), so nobody posts the big blind twice."""
+    alive = [i for i, s in enumerate(stacks) if s > 0]
+    if len(alive) == 2 and last_big_blind in alive:
+        return last_big_blind
+    button = (button + 1) % len(stacks)
+    while stacks[button] == 0:
+        button = (button + 1) % len(stacks)
+    return button
+
+
+def assign_places(places: list[float], seats: list[int], first_place: int, key: Callable[[int], int]) -> None:
+    """Give `seats` the places from first_place down, by key (higher is better); ties share places."""
     ordered = sorted(seats, key=key, reverse=True)
     place = first_place
     k = 0

@@ -1,6 +1,7 @@
 """Bots in their own processes: misbehaving bots must not break a match."""
 
 import textwrap
+import threading
 
 import pytest
 
@@ -79,6 +80,35 @@ def test_slow_bots_time_out_and_get_cut_off(tmp_path):
     """)
     stats = play(folder, hands=10, act_timeout=0.2, max_failures=3).stats
     assert stats.timeouts == 3 and stats.cut_off
+
+
+def test_stuck_bot_cannot_hang_the_match(tmp_path):
+    # A bot that never answers stops reading its input. The engine must not keep
+    # writing to it (a full pipe would block forever); it should just cut it off.
+    folder = make_bot(tmp_path, "stuck", """
+        while True:
+            pass
+    """)
+    outcome = {}
+    worker = threading.Thread(target=lambda: outcome.update(bot=play(folder, hands=30, act_timeout=0.1, max_failures=20)))
+    worker.start()
+    worker.join(timeout=60)
+    assert not worker.is_alive(), "the match hung on a stuck bot"
+    assert outcome["bot"].stats.cut_off
+
+
+def test_junk_on_the_protocol_stream_is_ignored(tmp_path):
+    folder = make_bot(tmp_path, "junk", """
+        frame = sys._getframe(1)
+        while frame and "protocol_out" not in frame.f_locals:
+            frame = frame.f_back
+        if frame:
+            frame.f_locals["protocol_out"].write('[]\\n"text"\\n{"id": -5}\\n')
+            frame.f_locals["protocol_out"].flush()
+        return Action.call()
+    """)
+    stats = play(folder, hands=5).stats
+    assert stats.failures == 0
 
 
 def test_crashing_bot_is_cut_off(tmp_path):

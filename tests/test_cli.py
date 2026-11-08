@@ -1,4 +1,5 @@
 import csv
+import json
 import subprocess
 import zipfile
 
@@ -69,3 +70,20 @@ def test_collect_from_git_zip_and_folder(tmp_path):
     found = {e.name: e.path for e in discover_entries([out])}
     assert sorted(found) == ["alice", "bob", "carol", "dave"]
     assert found["dave"] == (out / "dave" / "calling_station").resolve()
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["entries"]["dave"]["bot_dir"] == "dave/calling_station"  # portable, not tied to this machine
+
+
+def test_resuming_needs_the_seed(tmp_path, capsys):
+    base = ["run", "random_bot", "calling_station", "--name", "r", "--hands", "5", "--out", str(tmp_path), "--in-process"]
+    assert main(base + ["--seed", "4242"]) == 0
+    run_file = tmp_path / "r" / "run.json"
+    saved = json.loads(run_file.read_text(encoding="utf-8"))
+    assert saved["seed"] == 4242  # the round finished, so the seed is published
+    # Make it look like a run that was interrupted: the seed isn't on disk then.
+    run_file.write_text(json.dumps(dict(saved, seed=None)), encoding="utf-8")
+    assert main(base + ["--resume"]) == 2
+    assert main(base + ["--resume", "--seed", "999"]) == 2
+    capsys.readouterr()
+    assert main(base + ["--resume", "--seed", "4242"]) == 0
+    assert "(0 of 2 half-matches to play)" in capsys.readouterr().out

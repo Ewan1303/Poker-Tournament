@@ -1,6 +1,9 @@
 import gzip
 import json
 import random
+import time
+
+import pytest
 
 from poker_tournament import Action, PokerBot
 from poker_tournament.env import HeadsUpEnv
@@ -61,6 +64,76 @@ def test_tournament_round_and_resume(tmp_path):
     again = run_tournament(entries, config, tmp_path / "test", resume=True, echo=lines.append)
     assert "(0 of 6 half-matches to play)" in lines[0]
     assert again["heads_up"]["leaderboard"] == board
+
+
+def test_nothing_written_during_a_run_reveals_the_seed(tmp_path):
+    entries = discover_entries(["random_bot", "calling_station"])
+    config = TournamentConfig(name="secret", formats=("heads_up", "sng"), hands=10, games=2, seed=987654321987, in_process=True)
+    run_tournament(entries, config, tmp_path / "secret", echo=lambda line: None)
+    for path in (tmp_path / "secret").rglob("*.json"):
+        if path.name not in ("run.json", "results.json"):  # those two are rewritten with the seed at the end
+            assert "987654321987" not in path.read_text(encoding="utf-8"), path
+
+
+def test_sit_and_go_never_posts_the_big_blind_twice_running():
+    from poker_tournament.match import HandLog
+
+    for seed in range(12):
+        players = [LocalBot(load_bot(name), name) for name in ("random_bot", "calling_station", "ml_example")]
+        log = HandLog()
+        play_sng(players, seed=seed, hands_per_level=2, hand_log=log)
+        previous = None
+        for record in log.records:
+            big_blind = next(e["seat"] for e in record["history"] if e["action"] == "big_blind")
+            name = record["players"][big_blind]["name"]
+            if len(record["players"]) == 2:
+                assert name != previous, f"seed {seed}: {name} posted the big blind twice"
+            previous = name
+
+
+def test_in_process_bots_keep_their_own_helper_modules(tmp_path):
+    for value in (1, 2):
+        folder = tmp_path / f"bot{value}"
+        folder.mkdir()
+        (folder / "helper.py").write_text(f"VALUE = {value}\n", encoding="utf-8")
+        (folder / "bot.py").write_text(
+            "from helper import VALUE\nfrom poker_tournament import Action, PokerBot\n\n"
+            "class Bot(PokerBot):\n    value = VALUE\n\n    def act(self, obs):\n        return Action.call()\n",
+            encoding="utf-8",
+        )
+    assert load_bot(tmp_path / "bot1").value == 1
+    assert load_bot(tmp_path / "bot2").value == 2
+
+
+def test_names_that_differ_only_in_case_clash(tmp_path):
+    from poker_tournament.loader import BotLoadError, BUILTIN_BOTS
+    import shutil
+
+    for parent, name in (("a", "Bob"), ("b", "bob")):
+        shutil.copytree(BUILTIN_BOTS / "calling_station", tmp_path / parent / name)
+    with pytest.raises(BotLoadError, match="share a name"):
+        discover_entries([tmp_path / "a" / "Bob", tmp_path / "b" / "bob"])
+
+
+def test_a_failure_stops_the_round_straight_away():
+    from poker_tournament.tournament import _run_tasks
+
+    played = []
+
+    def play(task):
+        time.sleep(0.2)
+        played.append(task)
+        return task
+
+    def on_result(task, result):
+        raise RuntimeError("stop")
+
+    started = time.perf_counter()
+    with pytest.raises(RuntimeError):
+        _run_tasks(list(range(30)), play, 2, on_result)
+    assert time.perf_counter() - started < 2
+    time.sleep(0.5)  # let tasks that were already running finish
+    assert len(played) < 10  # the queued ones were cancelled, not played
 
 
 def test_tournament_with_separate_processes(tmp_path):

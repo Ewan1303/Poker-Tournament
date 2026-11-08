@@ -13,6 +13,7 @@ picked up again with resume=True.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
@@ -27,7 +28,7 @@ from typing import Callable
 
 from .loader import BotLoadError, extract_zip, find_bot_root, resolve_bot
 from .match import SNG_LEVELS, HandLog, duplicate_result, play_heads_up, play_sng, write_hand_records
-from .players import BotPlayer, BotStats, LocalBot, ProcessBot
+from .players import BotPlayer, BotStats, LocalBot, ProcessBot, kill_all_bots
 
 
 @dataclass
@@ -56,12 +57,20 @@ class TournamentConfig:
     hand_logs: bool = True
     full_info_logs: bool = False
 
+    def seed_hash(self) -> str:
+        """Identifies the seed without giving it away (the shuffle code is public)."""
+        return hashlib.sha256(f"poker-tournament:{self.seed}".encode()).hexdigest()[:16]
+
+    def public_dict(self) -> dict:
+        """The settings without the secret seed: safe to write to disk while bots run."""
+        return dict(asdict(self), seed=None, seed_hash=self.seed_hash())
+
     def heads_up_key(self) -> dict:
-        """Settings that must match for a saved half-match to be reused."""
-        return {"hands": self.hands, "seed": self.seed, "stack": self.stack, "blinds": [self.small_blind, self.big_blind]}
+        """Settings that must match for a saved pairing to be reused."""
+        return {"hands": self.hands, "seed_hash": self.seed_hash(), "stack": self.stack, "blinds": [self.small_blind, self.big_blind]}
 
     def sng_key(self) -> dict:
-        return {"seed": self.seed, "stack": self.stack, "table_size": self.table_size, "hands_per_level": self.hands_per_level}
+        return {"seed_hash": self.seed_hash(), "stack": self.stack, "table_size": self.table_size, "hands_per_level": self.hands_per_level}
 
 
 def safe_name(name: str) -> str:
@@ -85,7 +94,7 @@ def discover_entries(paths: list[str | Path]) -> list[Entry]:
             found = 0
             for child in children:
                 if child.is_dir():
-                    root = Path(collected[child.name]) if child.name in collected else find_bot_root(child)
+                    root = path / collected[child.name] if child.name in collected else find_bot_root(child)
                     if root is None or not (root / "bot.py").is_file():
                         problems.append(child.name)
                         continue
@@ -105,8 +114,9 @@ def discover_entries(paths: list[str | Path]) -> list[Entry]:
             root = resolve_bot(spec)
             name = path.stem if path.suffix.lower() == ".zip" else (path.name if path.exists() else str(spec))
             entries.append(Entry(safe_name(name), root))
-    names = [e.name for e in entries]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
+    # Names become file names, and Windows ignores case in those.
+    lowered = [e.name.lower() for e in entries]
+    duplicates = sorted({e.name for e in entries if lowered.count(e.name.lower()) > 1})
     if duplicates:
         raise BotLoadError(f"two bots share a name: {', '.join(duplicates)} (rename a folder)")
     return entries
@@ -148,7 +158,10 @@ def run_tournament(
     if config.in_process:
         config.workers = 1  # in-process bots share one interpreter, so run them one at a time
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "run.json").write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+    bots = [e.name for e in entries]
+    # Nothing written while bots run may contain the seed: with it, a bot could rebuild every deck.
+    run_file = out_dir / "run.json"
+    run_file.write_text(json.dumps(dict(config.public_dict(), bots=bots), indent=2), encoding="utf-8")
     summary = {
         "name": config.name,
         "created": datetime.now().isoformat(timespec="seconds"),
@@ -159,9 +172,28 @@ def run_tournament(
         summary["heads_up"] = _run_heads_up(entries, config, out_dir, resume, echo)
     if "sng" in config.formats:
         summary["sng"] = _run_sng(entries, config, out_dir, resume, echo)
+    run_file.write_text(json.dumps(dict(asdict(config), seed_hash=config.seed_hash(), bots=bots), indent=2), encoding="utf-8")
     (out_dir / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (out_dir / "leaderboard.md").write_text(leaderboard_markdown(summary), encoding="utf-8")
     return summary
+
+
+def _run_tasks(tasks: list, play: Callable, workers: int, on_result: Callable) -> None:
+    """Run play(task) on a thread pool, calling on_result(task, result) as each finishes.
+
+    If anything goes wrong (or Ctrl+C), queued tasks are cancelled and running
+    bots are stopped straight away, rather than playing out the rest of the round.
+    """
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
+        futures = {pool.submit(play, task): task for task in tasks}
+        for future in as_completed(futures):
+            on_result(futures[future], future.result())
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        kill_all_bots()
+        raise
+    pool.shutdown()
 
 
 # -- heads-up round robin -------------------------------------------------------
@@ -175,7 +207,7 @@ def _run_heads_up(entries, config, out_dir, resume, echo) -> dict:
         saved = out_dir / "matches" / f"{a.name}__vs__{b.name}.json"
         if resume and saved.exists():
             data = json.loads(saved.read_text(encoding="utf-8"))
-            if data.get("key") == config.heads_up_key():
+            if data.get("key") == config.heads_up_key() and (data.get("a"), data.get("b")) == (a.name, b.name):
                 results[(a.name, b.name)] = data["halves"]
                 continue
         todo += [(a, b, 1), (a, b, 2)]
@@ -184,26 +216,23 @@ def _run_heads_up(entries, config, out_dir, resume, echo) -> dict:
         f"{config.hands} deals x 2 seats each ({len(todo)} of {2 * len(pairings)} half-matches to play)"
     )
 
-    def play(task):
-        a, b, half = task
-        return task, _play_half(a, b, half, config)
-
     finished: dict[tuple[str, str], dict[int, dict]] = {}
     started = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=max(1, config.workers)) as pool:
-        futures = [pool.submit(play, task) for task in todo]
-        for done, future in enumerate(as_completed(futures), 1):
-            (a, b, half), result = future.result()
-            elapsed = time.perf_counter() - started
-            remaining = elapsed / done * (len(todo) - done)
-            echo(
-                f"  [{done}/{len(todo)}] {a.name} vs {b.name} (half {half}): "
-                f"{a.name} {sum(result['a_nets']):+,} chips in {result['seconds']:.0f}s  (about {remaining / 60:.0f} min left)"
-            )
-            halves = finished.setdefault((a.name, b.name), {})
-            halves[half] = result
-            if len(halves) == 2:
-                results[(a.name, b.name)] = _save_pairing(a, b, halves, config, out_dir)
+
+    def on_result(task, result):
+        a, b, half = task
+        done = sum(len(h) for h in finished.values()) + 1
+        remaining = (time.perf_counter() - started) / done * (len(todo) - done)
+        echo(
+            f"  [{done}/{len(todo)}] {a.name} vs {b.name} (half {half}): "
+            f"{a.name} {sum(result['a_nets']):+,} chips in {result['seconds']:.0f}s  (about {remaining / 60:.0f} min left)"
+        )
+        halves = finished.setdefault((a.name, b.name), {})
+        halves[half] = result
+        if len(halves) == 2:
+            results[(a.name, b.name)] = _save_pairing(a, b, halves, config, out_dir)
+
+    _run_tasks(todo, lambda task: _play_half(*task, config), config.workers, on_result)
     return _summarize_heads_up(entries, results, config)
 
 
@@ -331,18 +360,16 @@ def _run_sng(entries, config, out_dir, resume, echo) -> dict:
                 continue
         todo.append((game, table))
     echo(f"Sit-and-go: {config.games} games at tables of {table_size} ({len(todo)} to play)")
+    done = []
 
-    def play(task):
-        game, table = task
-        return game, _play_sng_game(game, table, config, out_dir)
+    def on_result(task, result):
+        game = task[0]
+        results[game] = result
+        done.append(game)
+        winner = result["names"][result["places"].index(min(result["places"]))]
+        echo(f"  [{len(done)}/{len(todo)}] game {game}: {winner} won after {result['hands']} hands")
 
-    with ThreadPoolExecutor(max_workers=max(1, config.workers)) as pool:
-        futures = [pool.submit(play, task) for task in todo]
-        for done, future in enumerate(as_completed(futures), 1):
-            game, result = future.result()
-            results[game] = result
-            winner = result["names"][result["places"].index(min(result["places"]))]
-            echo(f"  [{done}/{len(todo)}] game {game}: {winner} won after {result['hands']} hands")
+    _run_tasks(todo, lambda task: _play_sng_game(*task, config, out_dir), config.workers, on_result)
     return _summarize_sng(entries, results)
 
 
