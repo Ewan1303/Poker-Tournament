@@ -585,6 +585,8 @@ class TableSession:
             title = f"Tournament {self.tournament_no}, hand {hand.hand_id}" if tournament else f"Hand {hand.hand_id}"
             self._note(f"{title}: {self.names[self.button]} has the button, blinds {small:,}/{big:,}", "hand")
             self._note_board(0)
+            if hand.finished:  # everyone was all in on the blinds, so the cards were dealt out at once
+                self._settle(hand, active, starting)
             self._publish()
 
         while not hand.finished:
@@ -607,31 +609,37 @@ class TableSession:
                 if len(hand.board) > dealt:
                     self.last_actions = {s: a for s, a in self.last_actions.items() if a == "Fold" or "all in" in a}
                     self._note_board(dealt)
+                if hand.finished:
+                    self._settle(hand, active, starting)
                 self._publish()
 
-        # Like real poker: at a showdown everyone still in shows; anyone else may choose to.
+        # Like real poker: anyone who didn't have to show at a showdown may choose to.
         for k, seat in enumerate(active):
             player = self.players[seat]
             if player is not None and hand.shown(k) is None and player.wants_to_show(hand.result_for(k)):
                 with self._cond:
                     hand.show(k)
-        with self._cond:
-            for k, seat in enumerate(active):
-                self.stacks[seat] = hand.seats[k].stack
-                self.totals[seat] += hand.winnings[k]
-            self._big_blind_seat = active[big_blind_of(hand)]
-            self.hands_played += 1
-            self.result = self._summarize(hand, active)
-            self._note_shows(hand, active)
-            self._note_pots()
-            if tournament:
-                self._place_busted(active, starting)
-            self._hand_closed = False  # you can still choose to show until the next hand
-            self.status = "hand_over"
-            self._publish()
+                    self._note_show(hand, active, k)
+                    self._publish()
         if self.shadows:
             self._compare(hand, active, small, big, deck)
         self.hand_no += 1
+
+    def _settle(self, hand: Hand, active: list[int], starting: list[int]) -> None:
+        """Call with the lock held in the same update as the hand's last action: the
+        pot is already in the winners' stacks, so it mustn't look still in play."""
+        for k, seat in enumerate(active):
+            self.stacks[seat] = hand.seats[k].stack
+            self.totals[seat] += hand.winnings[k]
+        self._big_blind_seat = active[big_blind_of(hand)]
+        self.hands_played += 1
+        self.result = self._summarize(hand, active)
+        self._note_shows(hand, active)
+        self._note_pots()
+        if self.config.format == "tournament":
+            self._place_busted(active, starting)
+        self._hand_closed = False  # you can still choose to show until the next hand
+        self.status = "hand_over"
 
     def _close_hand(self) -> None:
         """Tell the bots how the hand ended (including whether you showed)."""
@@ -651,11 +659,14 @@ class TableSession:
     def _note_shows(self, hand: Hand, active: list[int]) -> None:
         order = [(hand.button + j) % hand.n for j in range(1, hand.n + 1)]
         for k in order:
-            how = hand.shown(k)
-            if how:
-                cards = cards_to_strs(hand.seats[k].hole)
-                detail = f" ({_PHRASES[hand_name(evaluate(hand.seats[k].hole + hand.board))]})" if how == "showdown" else " (didn't have to)"
-                self._note(f"{self.names[active[k]]} showed{detail}", "show", cards)
+            if hand.shown(k):
+                self._note_show(hand, active, k)
+
+    def _note_show(self, hand: Hand, active: list[int], k: int) -> None:
+        cards = cards_to_strs(hand.seats[k].hole)
+        how = hand.shown(k)
+        detail = f" ({_PHRASES[hand_name(evaluate(hand.seats[k].hole + hand.board))]})" if how == "showdown" else " (didn't have to)"
+        self._note(f"{self.names[active[k]]} showed{detail}", "show", cards)
 
     def _note_pots(self) -> None:
         """Who won what: the pot, or the main pot and each side pot."""

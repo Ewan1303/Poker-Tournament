@@ -137,9 +137,29 @@ def test_you_can_show_your_cards_when_nobody_made_you():
         session.stop()
 
 
+def test_bots_can_show_when_nobody_made_them():
+    config = SessionConfig(mode="watch", format="cash", bots=["bluffer", "rock"], speed="instant", pause_after_hand=0)
+    session = TableSession(config, AVAILABLE)
+    session.start()
+    show = "Bluffing Bella showed (didn't have to)"
+
+    def hand_with_a_show(snap):
+        # Bella shows half the pots she wins without a showdown, and Rocky folds most hands.
+        # The log only has the latest lines, so look for a show whose hand starts in it.
+        started = {e["hand"] for e in snap["log"] if e["kind"] == "hand"}
+        return next((e["hand"] for e in snap["log"] if e["text"] == show and e["hand"] in started), None)
+
+    try:
+        snap = until(session, hand_with_a_show)
+    finally:
+        session.stop()
+    texts = [e["text"] for e in snap["log"] if e["hand"] == hand_with_a_show(snap)]
+    assert any(text.startswith("Bluffing Bella wins") for text in texts[: texts.index(show)])  # she's paid first
+
+
 def test_tournament_mode_stops_at_the_hand_limit():
     config = SessionConfig(
-        mode="watch", format="tournament", bots=["calling_station", "calling_station", "rock"], max_hands=8, speed="instant", pause_after_hand=0
+        mode="watch", format="tournament", bots=["calling_station"] * 3, max_hands=8, speed="instant", pause_after_hand=0
     )
     session = TableSession(config, AVAILABLE)
     session.start()
@@ -147,7 +167,7 @@ def test_tournament_mode_stops_at_the_hand_limit():
         snap = until(session, lambda s: s["status"] == "finished")
     finally:
         session.stop()
-    assert snap["hand_no"] == 8  # calling stations rarely bust anyone in 8 hands
+    assert snap["hand_no"] == 8  # calling stations never bet, so nobody can go out in 8 hands
     assert all(row["place"] for row in snap["scoreboard"]["rows"])
     assert any("ranked by chips" in e["text"] for e in snap["log"])
 
@@ -189,29 +209,37 @@ def test_side_pots_are_announced_like_a_dealer_would():
     session.stop()
 
 
-def test_watching_plays_tournament_after_tournament():
+def test_watching_plays_tournament_after_tournament(tmp_path):
     config = SessionConfig(
         mode="watch", bots=["random_bot", "calling_station", "rock"], hands_per_level=5, max_hands=15, speed="instant", pause_after_hand=0
     )
-    session = TableSession(config, AVAILABLE)
+    session = TableSession(config, AVAILABLE, hand_log=tmp_path / "hands.jsonl")
     session.start()
-    uneven = []  # chip counts seen mid-tournament: they carry over, so they drift apart
 
     def check(snap):
         in_pot = snap["pot"] if snap["status"] in ("running", "your_turn") else 0  # chips bet this hand
         assert sum(seat["stack"] for seat in snap["seats"]) + in_pot == 3 * 10_000
-        if snap["hand_no"] > 1 and snap["tournaments_finished"] == 0:
-            # The scoreboard has what everyone started this hand with: not all back on 10,000.
-            uneven.append(any(row["stack"] != 10_000 for row in snap["scoreboard"]["rows"]))
+        assert snap["result"] or snap["status"] != "hand_over"  # a finished hand always comes with its result
         return snap["tournaments_finished"] >= 2 and snap["status"] == "running"
 
     try:
         snap = until(session, check, timeout=120)
     finally:
         session.stop()
-    assert any(uneven), "chips were reset between hands"
     assert snap["tournament_no"] == 3
     assert sum(row["wins"] for row in snap["scoreboard"]["rows"]) == 2
+
+    # At Instant speed a whole tournament can pass between two snapshots, so check
+    # the chips in the hand log, which has every hand.
+    hands = [json.loads(line) for line in (tmp_path / "hands.jsonl").read_text(encoding="utf-8").splitlines()]
+    for number in (1, 2):
+        played = [hand for hand in hands if hand["tournament"] == number]
+        assert [hand["hand_id"] for hand in played] == list(range(1, len(played) + 1)) and len(played) <= 15
+        assert [p["start_stack"] for p in played[0]["players"]] == [10_000] * 3  # everyone starts again
+        for before, after in zip(played, played[1:]):
+            # Chips carry over: each hand starts where the last one finished, without anyone who went out.
+            left = {p["name"]: p["end_stack"] for p in before["players"] if p["end_stack"] > 0}
+            assert {p["name"]: p["start_stack"] for p in after["players"]} == left
 
 
 def test_comparison_works_in_tournaments():
