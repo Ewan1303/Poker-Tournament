@@ -178,6 +178,39 @@ def run_tournament(
     return summary
 
 
+def summarize_saved(out_dir: Path) -> dict:
+    """A summary of a run from the matches and games saved so far: the
+    leaderboard of a round still in progress. Finished runs have results.json."""
+    data = json.loads((out_dir / "run.json").read_text(encoding="utf-8"))
+    names = data.get("bots", [])
+    config = TournamentConfig(**{k: v for k, v in data.items() if k in TournamentConfig.__dataclass_fields__})
+    key_hash = data.get("seed_hash") or config.seed_hash()
+    entries = [Entry(name, Path()) for name in names]
+    summary = {
+        "name": config.name,
+        "created": datetime.fromtimestamp((out_dir / "run.json").stat().st_mtime).isoformat(timespec="seconds"),
+        "config": dict(asdict(config), seed=None),
+        "bots": [{"name": name} for name in names],
+    }
+    if "heads_up" in config.formats:
+        pairings = {}
+        for path in (out_dir / "matches").glob("*.json"):
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("key", {}).get("seed_hash") == key_hash:
+                pairings[(saved["a"], saved["b"])] = saved["halves"]
+        summary["heads_up"] = _summarize_heads_up(entries, pairings, config)
+        summary["heads_up"]["progress"] = [len(pairings), len(names) * (len(names) - 1) // 2]
+    if "sng" in config.formats:
+        games = {}
+        for path in (out_dir / "sng").glob("game*.json"):
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("key", {}).get("seed_hash") == key_hash:
+                games[path.stem] = saved
+        summary["sng"] = _summarize_sng(entries, games)
+        summary["sng"]["progress"] = [len(games), config.games]
+    return summary
+
+
 def _run_tasks(tasks: list, play: Callable, workers: int, on_result: Callable) -> None:
     """Run play(task) on a thread pool, calling on_result(task, result) as each finishes.
 

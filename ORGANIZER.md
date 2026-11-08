@@ -83,6 +83,12 @@ Everything goes into `results/round-1/`:
 
 **How sure is the result?** The leaderboard shows a 95% range for each score. If the top two bots' ranges overlap, the round was close. You can play more hands (`--hands 3000`) or call it a tie.
 
+## Showing the results
+
+`poker results` opens the leaderboards in your browser. Each bot gets a bar for its bb/100 with its 95% range, and a grid shows every head-to-head result. It reads `results/`. If a round is still running, it shows the pairings finished so far and refreshes every few seconds, so you can leave it up on a screen during the run.
+
+To watch the entries actually play, put them at a table with `poker watch submissions/round-1`. It seats up to 10 at once, with cards face up. Watching for a minute is also a quick way to check a submission behaves sensibly.
+
 ## Publishing
 
 ```bash

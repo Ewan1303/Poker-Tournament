@@ -21,6 +21,9 @@ poker = "poker_tournament.cli:main"
 [tool.setuptools.packages.find]
 include = ["poker_tournament*"]
 
+[tool.setuptools.package-data]
+poker_tournament = ["web/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

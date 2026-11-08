@@ -91,7 +91,7 @@ Each entry in `obs.history`, and in `result.history`, looks like this:
 
 | Field | Meaning |
 |---|---|
-| `format` | `"heads_up"` or `"sng"` |
+| `format` | `"heads_up"` or `"sng"` in the tournament. `poker play` and `poker watch` can also send `"cash"`: three or more players, each starting every hand with the same chips |
 | `your_name`, `players` | Your name, and the names of everyone in the match or game |
 | `starting_stack`, `small_blind`, `big_blind` | Chips and opening blinds |
 | `num_hands` | Hands in this half of a heads-up match (`None` in a sit-and-go) |
@@ -129,6 +129,7 @@ from poker_tournament.match import play_match                 # play_match(bot_a
 ## Testing and debugging
 
 - `poker match my_bots/alice equity_bot` plays a duplicate match in separate processes, exactly as the tournament does.
+- `poker watch my_bots/alice equity_bot` shows them playing at a table in your browser, every card face up and one action at a time if you like. `poker play my_bots/alice` lets you play against your own bot.
 - Add `--in-process` to run both bots in your own process. It's faster, and breakpoints and `pdb` work.
 - `poker validate my_bots/alice` lists errors with tracebacks, illegal actions and how long decisions take.
 

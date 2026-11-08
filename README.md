@@ -64,6 +64,26 @@ poker validate my_bots/alice
 
 **5. Submit** before the deadline: see [SUBMITTING.md](SUBMITTING.md).
 
+## Watch and play in your browser
+
+```bash
+poker play
+poker watch
+poker results
+```
+
+- **`poker play`** opens a table in your browser where you play against the bots. Use the buttons, the raise slider, or the keys F (fold), C (check/call) and R (raise).
+- **`poker watch`** seats the bots around one table with every card face up. You can pause, step one action at a time, or speed up to Instant to watch thousands of hands.
+- **`poker results`** shows tournament leaderboards as charts.
+
+Every bot in `bots/` and in your `my_bots/` folder is available, or you can name the ones you want: `poker play equity_bot my_bots/alice`. Choose **New game** in the page to switch between playing and watching, between a cash game and a sit-and-go, or to change who is at the table.
+
+![Playing against the bots](docs/images/play.jpg)
+
+**How do you compare?** In a cash game, every hand you play is replayed in the background with each bot sitting in your seat, against its own copies of the same opponents with exactly the same cards. The *Same cards, same seat* panel adds those results up, so you can see whether you played your hands better than equity_bot would have. It's the same idea as the tournament's duplicate format, applied to you.
+
+![Tournament results](docs/images/results.jpg)
+
 ## Writing a bot
 
 A bot is a folder with a `bot.py` that defines a class called `Bot`:
@@ -114,7 +134,7 @@ Organizers: see [ORGANIZER.md](ORGANIZER.md) for collecting submissions, running
 
 | Path | What it is |
 |---|---|
-| [poker_tournament/](poker_tournament) | The engine, hand evaluator, bot sandbox, tournament runner and the `poker` command |
+| [poker_tournament/](poker_tournament) | The engine, hand evaluator, bot sandbox, tournament runner and the `poker` command; `web/` and `arena.py` are the browser table |
 | [bots/](bots) | Built-in bots: `random_bot`, `calling_station`, `equity_bot` (rule-based) and `ml_example` |
 | [templates/starter_bot/](templates/starter_bot) | What `poker new` copies |
 | [docs/](docs) | Bot API reference and machine-learning guide |

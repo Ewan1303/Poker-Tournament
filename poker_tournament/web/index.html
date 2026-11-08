@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Poker Tournament</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">♠</span> Poker Tournament</div>
+    <nav class="tabs" aria-label="View">
+      <button class="tab active" data-view="table">Table</button>
+      <button class="tab" data-view="results">Results</button>
+    </nav>
+    <div class="status-line" id="status-line"></div>
+    <button class="btn" id="new-game">New game</button>
+  </header>
+
+  <main>
+    <section class="view table-view" id="table-view">
+      <div class="stage">
+        <div class="table-wrap" id="table-wrap">
+          <div class="rail">
+            <div class="felt">
+              <div class="felt-logo">POKER TOURNAMENT</div>
+              <div class="pot" id="pot"></div>
+              <div class="board" id="board"></div>
+              <div class="message" id="message"></div>
+            </div>
+          </div>
+          <div id="bets"></div>
+          <div id="seats"></div>
+        </div>
+        <div class="dock">
+          <div class="actions" id="actions"></div>
+          <div class="playback" id="playback">
+            <button class="btn" id="pause" title="Pause or resume (P)">Pause</button>
+            <button class="btn" id="step" title="One action at a time while paused (S)">Step</button>
+            <button class="btn" id="next" title="Skip to the next hand (N)">Next hand</button>
+            <label class="field">Speed
+              <select id="speed">
+                <option value="slow">Slow</option>
+                <option value="normal">Normal</option>
+                <option value="fast">Fast</option>
+                <option value="turbo">Turbo</option>
+                <option value="instant">Instant</option>
+              </select>
+            </label>
+            <label class="check" id="show-cards-wrap"><input type="checkbox" id="show-cards"> Show all cards</label>
+          </div>
+        </div>
+      </div>
+
+      <aside class="side">
+        <section class="panel">
+          <h2 id="score-title">Scoreboard</h2>
+          <div id="scoreboard"></div>
+        </section>
+        <section class="panel" id="compare-panel" hidden>
+          <h2>Same cards, same seat</h2>
+          <p class="hint">Every hand you play is replayed with each of these bots in your seat, against the same opponents with the same cards.</p>
+          <div id="comparison"></div>
+        </section>
+        <section class="panel log-panel">
+          <h2>Hand log</h2>
+          <div class="log" id="log"></div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="view results-view" id="results-view" hidden>
+      <aside class="runs">
+        <h2>Tournament runs</h2>
+        <div id="runs"></div>
+      </aside>
+      <div class="run" id="run"></div>
+    </section>
+  </main>
+
+  <dialog id="setup">
+    <form id="setup-form" method="dialog">
+      <h2>New game</h2>
+      <div class="choice-row">
+        <label class="choice"><input type="radio" name="mode" value="play"><span><b>Play</b>Take a seat against the bots</span></label>
+        <label class="choice"><input type="radio" name="mode" value="watch"><span><b>Watch</b>See the bots play each other</span></label>
+      </div>
+      <div class="choice-row">
+        <label class="choice"><input type="radio" name="format" value="cash"><span><b>Cash game</b>Everyone gets fresh chips every hand</span></label>
+        <label class="choice"><input type="radio" name="format" value="sng"><span><b>Sit-and-go</b>Blinds rise until one player has every chip</span></label>
+      </div>
+      <fieldset>
+        <legend>Bots at the table <small id="seat-count"></small></legend>
+        <div class="bot-list" id="bot-list"></div>
+      </fieldset>
+      <fieldset class="play-only">
+        <legend>Your name</legend>
+        <input type="text" name="player_name" maxlength="24" required>
+      </fieldset>
+      <fieldset class="compare-only">
+        <legend>Compare your results with</legend>
+        <div class="bot-list" id="compare-list"></div>
+      </fieldset>
+      <fieldset class="numbers">
+        <label>Starting chips <input type="number" name="stack" min="100" step="100"></label>
+        <label>Small blind <input type="number" name="small_blind" min="1"></label>
+        <label>Big blind <input type="number" name="big_blind" min="1"></label>
+        <label class="sng-only">Blinds up every <input type="number" name="hands_per_level" min="1"> hands</label>
+      </fieldset>
+      <p class="form-error" id="setup-error"></p>
+      <div class="dialog-buttons">
+        <button type="button" class="btn" id="setup-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

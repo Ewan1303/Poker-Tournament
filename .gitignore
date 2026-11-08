@@ -1,3 +1,6 @@
+# Local editor and assistant settings
+.claude/
+
 # Python
 __pycache__/
 *.pyc

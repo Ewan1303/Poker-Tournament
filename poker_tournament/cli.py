@@ -177,6 +177,51 @@ def _cmd_run(args) -> int:
     return 0
 
 
+def _cmd_table(args) -> int:
+    """poker watch / play / results: the browser app."""
+    from .arena import MAX_COMPARE, MAX_SEATS, SessionConfig
+    from .loader import BUILTIN_BOTS, find_bot_root
+    from .tournament import discover_entries
+    from .webapp import App, serve
+
+    builtin = {p.name: p.resolve() for p in sorted(BUILTIN_BOTS.iterdir()) if (p / "bot.py").is_file()}
+    available = dict(builtin)
+    mine = Path("my_bots")  # your own bots show up in the app automatically
+    if mine.is_dir():
+        for folder in sorted(mine.iterdir()):
+            root = find_bot_root(folder) if folder.is_dir() else None
+            if root:
+                available.setdefault(folder.name, root.resolve())
+    chosen = []
+    for entry in discover_entries(args.bots) if args.bots else []:
+        available[entry.name] = entry.path
+        chosen.append(entry.name)
+    chosen = chosen or list(available)
+    mode = "play" if args.command == "play" else "watch"
+    room = MAX_SEATS - (mode == "play")
+    if len(chosen) > room:
+        print(f"Only {room} bots fit at the table, so seating: {', '.join(chosen[:room])}")
+        chosen = chosen[:room]
+    compare = list(dict.fromkeys(chosen + list(builtin)))[:MAX_COMPARE]
+    config = SessionConfig(
+        mode=mode,
+        format=args.format,
+        bots=chosen,
+        compare=compare if mode == "play" and args.format == "cash" else [],
+        player_name=getattr(args, "name", "You"),
+        stack=args.stack,
+        small_blind=args.blinds[0],
+        big_blind=args.blinds[1],
+        hands_per_level=args.hands_per_level,
+        speed=args.speed,
+    )
+    app = App(available, set(builtin), config, results_dir=Path(args.results), hand_log=getattr(args, "log", None))
+    if args.command == "results":
+        app.session.control(paused=True)  # just looking at results: don't spend CPU on a table
+    serve(app, port=args.port, open_browser=not args.no_browser, page="#results" if args.command == "results" else "")
+    return 0
+
+
 def _cmd_collect(args) -> int:
     from .collect import collect
 
@@ -252,6 +297,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--in-process", action="store_true", help="no isolation (only for quick local tests)")
     timing(p)
     p.set_defaults(func=_cmd_run)
+
+    def table_options(p, default_speed):
+        p.add_argument("bots", nargs="*", help="bots to seat: folders, zips, names in bots/ or a submissions folder (default: every bot in bots/ and my_bots/)")
+        p.add_argument("--format", choices=["cash", "sng"], default="cash", help="cash: chips reset every hand (default); sng: last one standing")
+        p.add_argument("--stack", type=int, default=10_000, help="starting chips (default 10000)")
+        p.add_argument("--blinds", type=_blinds, default=(50, 100), help="SMALL/BIG (default 50/100)")
+        p.add_argument("--hands-per-level", type=int, default=10, help="sit-and-go hands between blind increases (default 10)")
+        p.add_argument("--speed", choices=["slow", "normal", "fast", "turbo", "instant"], default=default_speed, help=f"how fast bots act (default {default_speed})")
+        p.add_argument("--results", default="results", help="folder of tournament results for the Results tab (default results/)")
+        p.add_argument("--port", type=int, default=8790, help="local port for the page (default 8790)")
+        p.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
+        p.set_defaults(func=_cmd_table)
+
+    p = sub.add_parser("watch", help="watch bots play at a table in your browser")
+    table_options(p, "normal")
+
+    p = sub.add_parser("play", help="play against bots in your browser and compare yourself with them")
+    table_options(p, "normal")
+    p.add_argument("--name", default="You", help="your name at the table (default You)")
+    p.add_argument("--log", help="save every hand you play, with all cards, to this .jsonl (or .jsonl.gz) file")
+
+    p = sub.add_parser("results", help="look at tournament leaderboards in your browser")
+    table_options(p, "normal")
 
     p = sub.add_parser("collect", help="fetch submissions listed in a CSV (git repos, zips, folders)")
     p.add_argument("entries", help="CSV with columns name,source[,ref][,subdir]")
