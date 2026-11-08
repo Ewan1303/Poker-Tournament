@@ -88,11 +88,11 @@ poker results
 - **`poker watch`** seats the bots around one table with every card face up, and each player's chance of winning from that point as a percentage, like on TV. That's also how you check a bot isn't cheating: you can see exactly what it held for every decision. You can pause, step one action at a time, or speed up to Instant to watch thousands of hands.
 - **`poker results`** shows tournament leaderboards as charts: wins, finishing positions, and the heads-up grid if you ran one.
 
-Every bot in `bots/` and in your `my_bots/` folder is available, or you can name the ones you want: `poker play equity_bot my_bots/alice`. Choose **New game** in the page to switch between playing and watching, or between a cash game and a tournament with a hand limit, and to change who is at the table. Side pots appear on the table whenever someone is all in for less.
+Both play **tournaments** by default, like the main event. Chips carry over from hand to hand until one player has them all or the 100-hand limit is reached, then everyone starts again for the next tournament. The scoreboard counts how many each player has won. Choose **New game** in the page to switch to a cash game, where everyone gets fresh chips every hand, to swap between playing and watching, or to change who's at the table. Every bot in `bots/` and in your `my_bots/` folder is available, or name the ones you want: `poker play equity_bot my_bots/alice`. Side pots appear on the table whenever someone is all in for less.
 
 ![Playing against the bots](docs/images/play.jpg)
 
-**How do you compare?** In a cash game, every hand you play is replayed in the background with each bot sitting in your seat, against its own copies of the same opponents with exactly the same cards. The *Same cards, same seat* panel adds those results up, so you can see whether you played your hands better than Professor Odds would have. It's the same idea as the tournament's duplicate format, applied to you. Hover over a seat to see that bot's description.
+**How do you compare?** Every hand you play is replayed in the background with each bot sitting in your seat, against its own copies of the same opponents, with exactly the same cards and chip stacks. The *Same cards, same seat* panel adds those results up, so you can see whether you played your hands better than Professor Odds would have. It's the same idea as the tournament's duplicate format, applied to you. Hover over a seat to see that bot's description.
 
 ![Tournament results](docs/images/results.jpg)
 

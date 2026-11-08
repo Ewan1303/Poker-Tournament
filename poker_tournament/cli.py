@@ -213,12 +213,13 @@ def _cmd_table(args) -> int:
         mode=mode,
         format=args.format,
         bots=chosen,
-        compare=compare if mode == "play" and args.format == "cash" else [],
+        compare=compare if mode == "play" else [],
         player_name=getattr(args, "name", "You"),
         stack=args.stack,
         small_blind=args.blinds[0],
         big_blind=args.blinds[1],
         hands_per_level=args.hands_per_level,
+        max_hands=args.max_hands,
         speed=args.speed,
     )
     app = App(available, set(builtin), config, results_dir=Path(args.results), hand_log=getattr(args, "log", None))
@@ -344,10 +345,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     def table_options(p, default_speed):
         p.add_argument("bots", nargs="*", help="bots to seat: folders, zips, names in bots/ or a submissions folder (default: every bot in bots/ and my_bots/)")
-        p.add_argument("--format", choices=["cash", "sng"], default="cash", help="cash: chips reset every hand (default); sng: last one standing")
+        p.add_argument(
+            "--format",
+            choices=["tournament", "cash"],
+            default="tournament",
+            help="tournament: chips carry over until one player has them all or the hand limit, then the next one (default); cash: chips reset every hand",
+        )
+        p.add_argument("--max-hands", type=int, default=100, help="tournament hands before it's decided on chips; 0 plays to the end (default 100)")
         p.add_argument("--stack", type=int, default=10_000, help="starting chips (default 10000)")
         p.add_argument("--blinds", type=_blinds, default=(50, 100), help="SMALL/BIG (default 50/100)")
-        p.add_argument("--hands-per-level", type=int, default=10, help="sit-and-go hands between blind increases (default 10)")
+        p.add_argument("--hands-per-level", type=int, default=10, help="tournament hands between blind increases (default 10)")
         p.add_argument("--speed", choices=["slow", "normal", "fast", "turbo", "instant"], default=default_speed, help=f"how fast bots act (default {default_speed})")
         p.add_argument("--results", default="results", help="folder of tournament results for the Results tab (default results/)")
         p.add_argument("--port", type=int, default=8790, help="local port for the page (default 8790)")

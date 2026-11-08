@@ -87,8 +87,8 @@
         <label class="choice"><input type="radio" name="mode" value="watch"><span><b>Watch</b>See the bots play each other</span></label>
       </div>
       <div class="choice-row">
+        <label class="choice"><input type="radio" name="format" value="tournament"><span><b>Tournament</b>Chips carry over, blinds rise, last one standing (or most chips at the hand limit). Then the next one</span></label>
         <label class="choice"><input type="radio" name="format" value="cash"><span><b>Cash game</b>Everyone gets fresh chips every hand</span></label>
-        <label class="choice"><input type="radio" name="format" value="sng"><span><b>Tournament</b>Blinds rise until one player has every chip, or the hand limit</span></label>
       </div>
       <fieldset>
         <legend>Bots at the table <small id="seat-count"></small></legend>
@@ -106,8 +106,8 @@
         <label>Starting chips <input type="number" name="stack" min="100" step="100"></label>
         <label>Small blind <input type="number" name="small_blind" min="1"></label>
         <label>Big blind <input type="number" name="big_blind" min="1"></label>
-        <label class="sng-only">Blinds up every <input type="number" name="hands_per_level" min="1"> hands</label>
-        <label class="sng-only" title="After this many hands the game is decided on chips. 0 plays until one player has everything.">Stop after <input type="number" name="max_hands" min="0"> hands</label>
+        <label class="tournament-only">Blinds up every <input type="number" name="hands_per_level" min="1"> hands</label>
+        <label class="tournament-only" title="After this many hands the game is decided on chips. 0 plays until one player has everything.">Stop after <input type="number" name="max_hands" min="0"> hands</label>
       </fieldset>
       <p class="form-error" id="setup-error"></p>
       <div class="dialog-buttons">

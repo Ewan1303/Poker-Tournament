@@ -35,6 +35,7 @@ def until(session, done, answer=None, timeout=60):
 def test_playing_hides_bot_cards_until_showdown_and_compares():
     config = SessionConfig(
         mode="play",
+        format="cash",
         bots=["random_bot", "calling_station"],
         compare=["equity_bot", "calling_station"],
         speed="instant",
@@ -78,7 +79,7 @@ def test_your_raise_is_applied():
 
 
 def test_watching_a_sit_and_go_to_the_end():
-    config = SessionConfig(mode="watch", format="sng", bots=["random_bot", "calling_station", "equity_bot"], hands_per_level=2, speed="instant", pause_after_hand=0)
+    config = SessionConfig(mode="watch", format="tournament", bots=["random_bot", "calling_station", "equity_bot"], hands_per_level=2, max_hands=0, speed="instant", pause_after_hand=0)
     session = TableSession(config, AVAILABLE)
     session.start()
     try:
@@ -111,7 +112,7 @@ def test_pause_and_step():
 
 
 def test_you_can_show_your_cards_when_nobody_made_you():
-    config = SessionConfig(mode="play", bots=["rock"], speed="instant", pause_after_hand=30)
+    config = SessionConfig(mode="play", format="cash", bots=["rock"], speed="instant", pause_after_hand=30)
     session = TableSession(config, AVAILABLE)
     session.start()
     try:
@@ -138,7 +139,7 @@ def test_you_can_show_your_cards_when_nobody_made_you():
 
 def test_tournament_mode_stops_at_the_hand_limit():
     config = SessionConfig(
-        mode="watch", format="sng", bots=["calling_station", "calling_station", "rock"], max_hands=8, speed="instant", pause_after_hand=0
+        mode="watch", format="tournament", bots=["calling_station", "calling_station", "rock"], max_hands=8, speed="instant", pause_after_hand=0
     )
     session = TableSession(config, AVAILABLE)
     session.start()
@@ -186,6 +187,47 @@ def test_side_pots_are_announced_like_a_dealer_would():
     assert "Callie 3 wins side pot 2 (400) with a pair" in texts
     assert sum(1 for t in texts if t.endswith("showed (a pair)")) == 4  # everyone still in shows at a showdown
     session.stop()
+
+
+def test_watching_plays_tournament_after_tournament():
+    config = SessionConfig(
+        mode="watch", bots=["random_bot", "calling_station", "rock"], hands_per_level=5, max_hands=15, speed="instant", pause_after_hand=0
+    )
+    session = TableSession(config, AVAILABLE)
+    session.start()
+    uneven = []  # chip counts seen mid-tournament: they carry over, so they drift apart
+
+    def check(snap):
+        in_pot = snap["pot"] if snap["status"] in ("running", "your_turn") else 0  # chips bet this hand
+        assert sum(seat["stack"] for seat in snap["seats"]) + in_pot == 3 * 10_000
+        if snap["hand_no"] > 1 and snap["tournaments_finished"] == 0:
+            # The scoreboard has what everyone started this hand with: not all back on 10,000.
+            uneven.append(any(row["stack"] != 10_000 for row in snap["scoreboard"]["rows"]))
+        return snap["tournaments_finished"] >= 2 and snap["status"] == "running"
+
+    try:
+        snap = until(session, check, timeout=120)
+    finally:
+        session.stop()
+    assert any(uneven), "chips were reset between hands"
+    assert snap["tournament_no"] == 3
+    assert sum(row["wins"] for row in snap["scoreboard"]["rows"]) == 2
+
+
+def test_comparison_works_in_tournaments():
+    config = SessionConfig(mode="play", bots=["calling_station"], compare=["calling_station"], speed="instant", pause_after_hand=0)
+    session = TableSession(config, AVAILABLE)
+    session.start()
+    try:
+        snap = until(
+            session,
+            lambda s: s["comparison"] and all(row["hands"] >= 5 for row in s["comparison"]["rows"]),
+            answer=lambda you: {"type": "call"},
+        )
+    finally:
+        session.stop()
+    assert snap["format"] == "tournament"
+    assert {row["name"] for row in snap["comparison"]["rows"]} == {"You", "Callie"}
 
 
 def test_bad_settings_are_rejected():
@@ -273,13 +315,14 @@ def test_play_and_watch_commands(monkeypatch, tmp_path):
     monkeypatch.setattr(webapp, "serve", lambda app, **options: started.append((app, options)))
     monkeypatch.chdir(tmp_path)  # no my_bots/ here
     assert main(["play", "--no-browser", "--speed", "instant"]) == 0
-    assert main(["watch", "random_bot", "calling_station", "--format", "sng", "--no-browser"]) == 0
+    assert main(["watch", "random_bot", "calling_station", "--format", "cash", "--no-browser"]) == 0
     assert main(["results", "--no-browser"]) == 0
     try:
         play, watch, results = (app.session for app, _ in started)
         assert play.config.mode == "play" and sorted(play.config.bots) == sorted(AVAILABLE)
         assert sorted(play.config.compare) == sorted(AVAILABLE)  # you against every bot, compared with each
-        assert watch.config.mode == "watch" and watch.config.format == "sng" and watch.config.bots == ["random_bot", "calling_station"]
+        assert watch.config.mode == "watch" and watch.config.format == "cash" and watch.config.bots == ["random_bot", "calling_station"]
+        assert play.config.format == "tournament"  # tournaments by default, like the main event
         assert results.paused and started[2][1]["page"] == "#results"
     finally:
         for app, _ in started:

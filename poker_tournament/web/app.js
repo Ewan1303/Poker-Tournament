@@ -108,8 +108,9 @@ function card(code, extra = "") {
 }
 
 function statusLine(snap) {
-  const parts = [snap.mode === "play" ? "<b>Playing</b>" : "<b>Watching</b>", snap.format === "cash" ? "cash game" : "sit-and-go"];
-  if (snap.hand_no) parts.push(`hand ${fmt(snap.hand_no)}`);
+  const tournament = snap.format === "tournament";
+  const parts = [snap.mode === "play" ? "<b>Playing</b>" : "<b>Watching</b>", tournament ? `tournament ${snap.tournament_no}` : "cash game"];
+  if (snap.hand_no) parts.push(`hand ${fmt(snap.hand_no)}${tournament && snap.hand_limit ? ` of ${snap.hand_limit}` : ""}`);
   parts.push(`blinds ${fmt(snap.blinds[0])}/${fmt(snap.blinds[1])}`);
   if (snap.street && snap.status !== "hand_over" && snap.status !== "finished") parts.push(snap.street);
   if (snap.paused) parts.push('<b class="live">paused</b>');
@@ -120,9 +121,11 @@ function tableMessage(snap) {
   if (snap.status === "loading") return "Loading the bots…";
   if (snap.status === "error") return "Something went wrong: see the hand log.";
   if (snap.status === "finished") {
-    const winner = snap.scoreboard.rows.find((row) => row.place === 1);
-    if (!winner) return "Game over";
-    return winner.you ? "You won the sit-and-go!" : `${winner.name} wins the sit-and-go!`;
+    const winners = snap.scoreboard.rows.filter((row) => row.place === 1);
+    const next = snap.mode === "watch" ? "The next one starts in a moment." : "Press Next tournament to play again.";
+    if (winners.length !== 1) return `Tournament ${snap.tournament_no} is shared. ${next}`;
+    const who = winners[0].you ? "You won" : `${winners[0].name} wins`;
+    return `${who} tournament ${snap.tournament_no}! ${next}`;
   }
   if (snap.status === "your_turn") return snap.you.to_call ? `Your turn: ${fmt(snap.you.to_call)} to call` : "Your turn";
   if (snap.status === "hand_over" && snap.result) {
@@ -312,6 +315,9 @@ async function decide(type) {
 function renderPlayback(snap) {
   $("#pause").textContent = snap.paused ? "Resume" : "Pause";
   $("#step").disabled = !snap.paused;
+  const next = $("#next");
+  next.textContent = snap.status === "finished" ? "Next tournament" : "Next hand";
+  next.classList.toggle("primary", snap.status === "finished" && snap.mode === "play");
   const speed = $("#speed");
   if (document.activeElement !== speed) speed.value = snap.speed;
   $("#show-cards-wrap").hidden = snap.mode !== "watch";
@@ -373,11 +379,17 @@ function renderScoreboard(snap) {
         <td class="${tone(row.total)}">${signed(row.total)}</td><td class="${tone(row.bb_per_100)}">${row.bb_per_100.toFixed(1)}</td></tr>`;
     });
   } else {
-    $("#score-title").textContent = "Chip counts";
-    html = `<table class="score"><tr><th></th><th class="who">Player</th><th>Chips</th></tr>`;
+    // Chips in this tournament, and tournaments won so far this session.
+    const played = board.tournaments || 0;
+    $("#score-title").textContent = `Tournament ${snap.tournament_no} · ${played} finished`;
+    html = `<table class="score"><tr><th></th><th class="who">Player</th><th>Chips</th><th title="Tournaments won this session">Won</th></tr>`;
     board.rows.forEach((row, i) => {
-      const chips = row.place != null ? `<span class="dim">${row.place === 1 ? "Winner" : `Out · ${ordinal(row.place)}`}</span>` : fmt(row.stack);
-      html += `<tr class="${row.you ? "you" : ""}"><td>${i + 1}</td>${who(snap, row)}<td>${chips}</td></tr>`;
+      let chips = fmt(row.stack);
+      if (row.place != null) {
+        chips = `<span class="dim">${row.place === 1 ? "Winner" : `${row.stack ? "" : "Out · "}${ordinal(row.place)}`}</span>`;
+      }
+      const won = Number.isInteger(row.wins) ? row.wins : row.wins.toFixed(1);
+      html += `<tr class="${row.you ? "you" : ""}"><td>${i + 1}</td>${who(snap, row)}<td>${chips}</td><td>${won}</td></tr>`;
     });
   }
   setHTML($("#scoreboard"), html + "</table>");
@@ -438,7 +450,7 @@ async function openSetup() {
   if (!botList) botList = (await api("/api/bots")).bots;
   const config = state?.config || {};
   form.elements.mode.value = config.mode || "play";
-  form.elements.format.value = config.format || "cash";
+  form.elements.format.value = config.format || "tournament";
   $("#bot-list").innerHTML = botList.map((bot) => botCard(bot, (config.bots || []).includes(bot.name))).join("");
   $("#compare-list").innerHTML = botList.map((bot) => pick("compare", bot, (config.compare || []).includes(bot.name))).join("");
   for (const key of ["player_name", "stack", "small_blind", "big_blind", "hands_per_level", "max_hands"]) {
@@ -451,10 +463,10 @@ async function openSetup() {
 
 function updateSetup() {
   const play = form.elements.mode.value === "play";
-  const sng = form.elements.format.value === "sng";
+  const tournament = form.elements.format.value === "tournament";
   form.querySelectorAll(".play-only").forEach((el) => { el.hidden = !play; });
-  form.querySelectorAll(".compare-only").forEach((el) => { el.hidden = !play || sng; });
-  form.querySelectorAll(".sng-only").forEach((el) => { el.hidden = !sng; });
+  form.querySelectorAll(".compare-only").forEach((el) => { el.hidden = !play; });
+  form.querySelectorAll(".tournament-only").forEach((el) => { el.hidden = !tournament; });
   form.elements.player_name.required = play;
   const seats = form.querySelectorAll('input[name="bots"]:checked').length + (play ? 1 : 0);
   $("#seat-count").textContent = `· ${seats} of 10 seats${play ? ", including you" : ""}`;
@@ -472,7 +484,7 @@ form.addEventListener("submit", async (event) => {
     mode: data.get("mode"),
     format: data.get("format"),
     bots: data.getAll("bots"),
-    compare: play && data.get("format") === "cash" ? data.getAll("compare") : [],
+    compare: play ? data.getAll("compare") : [],
     player_name: data.get("player_name") || "You",
     stack: Number(data.get("stack")),
     small_blind: Number(data.get("small_blind")),

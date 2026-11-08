@@ -44,15 +44,17 @@ MAX_COMPARE = 8
 @dataclass
 class SessionConfig:
     mode: str = "watch"  # "watch": bots only; "play": you take seat 0
-    format: str = "cash"  # "cash": everyone back to `stack` every hand; "sng": last one standing
+    # "tournament": chips carry over, last one standing (or most chips at the hand limit),
+    # then the next tournament; "cash": everyone back to `stack` every hand
+    format: str = "tournament"
     bots: list[str] = field(default_factory=list)  # bots at the table, by name
-    compare: list[str] = field(default_factory=list)  # bots to replay your seat with (play mode, cash game)
+    compare: list[str] = field(default_factory=list)  # bots to replay your seat with (play mode)
     player_name: str = "You"
     stack: int = 10_000
     small_blind: int = 50
     big_blind: int = 100
-    hands_per_level: int = 10  # sit-and-go: how often the blinds go up
-    max_hands: int = 100  # sit-and-go: after this many hands it's decided on chips (0 plays to the end)
+    hands_per_level: int = 10  # tournament: how often the blinds go up
+    max_hands: int = 100  # tournament: after this many hands it's decided on chips (0 plays to the end)
     speed: str = "normal"
     pause_after_hand: float | None = None  # seconds to show each result (None: depends on mode and speed)
 
@@ -77,8 +79,10 @@ class SessionConfig:
     def validate(self, available: dict[str, Path]) -> None:
         if self.mode not in ("watch", "play"):
             raise ValueError("mode must be watch or play")
-        if self.format not in ("cash", "sng"):
-            raise ValueError("format must be cash or sng")
+        if self.format == "sng":  # the old name for a tournament
+            self.format = "tournament"
+        if self.format not in ("tournament", "cash"):
+            raise ValueError("format must be tournament or cash")
         seats = len(self.bots) + (self.mode == "play")
         if self.mode == "play" and not self.bots:
             raise ValueError("pick at least one bot to play against")
@@ -121,7 +125,8 @@ def describe(event: dict) -> str:
 
 
 class _Shadow:
-    """Replays your deals with a bot in your seat, against its own copies of your opponents."""
+    """Replays each of your hands with a bot in your seat, against its own copies of
+    your opponents: same cards, same stacks, same button and blinds."""
 
     def __init__(self, name: str, path: Path, seat_paths: list[Path | None], names: list[str], your_seat: int):
         self.name = name
@@ -139,9 +144,10 @@ class _Shadow:
             player.match_start(dict(info, your_name=player.name, your_seat=seat))
         return True
 
-    def play(self, stacks, button, small, big, deck, hand_id) -> int:
-        hand = play_hand(self.players, stacks, button, small, big, deck, hand_id)
-        self.last = hand.winnings[self.your_seat]
+    def play(self, active, stacks, button, small, big, deck, hand_id) -> int:
+        """Replay one hand between the seats in `active` (table seat numbers)."""
+        hand = play_hand([self.players[seat] for seat in active], stacks, button, small, big, deck, hand_id)
+        self.last = hand.winnings[active.index(self.your_seat)]
         self.total += self.last
         self.hands += 1
         return self.last
@@ -190,7 +196,10 @@ class TableSession:
         self.hands_played = 0
         self.button = secrets.randbelow(n)
         self._big_blind_seat: int | None = None
-        self.hand_no = 0
+        self.hand_no = 0  # hands played in the current tournament (or in total, in a cash game)
+        self.tournament_no = 1
+        self.tournament_wins = [0.0] * n  # tournaments each seat has won this session (ties split)
+        self.tournaments_finished = 0
         self.hand: Hand | None = None
         self.active: list[int] = []
         self.blinds = (config.small_blind, config.big_blind)
@@ -373,7 +382,9 @@ class TableSession:
                 "pot": hand.pot if hand else 0,
                 "pots": self._pots(),
                 "blinds": list(self.blinds),
-                "hand_limit": cfg.max_hands if cfg.format == "sng" else 0,
+                "hand_limit": cfg.max_hands if cfg.format == "tournament" else 0,
+                "tournament_no": self.tournament_no,
+                "tournaments_finished": self.tournaments_finished,
                 "seats": seats,
                 "your_seat": self.your_seat,
                 "you": you,
@@ -410,12 +421,13 @@ class TableSession:
             else:
                 row["stack"] = self.stacks[seat]
                 row["place"] = self.places[seat]
+                row["wins"] = self.tournament_wins[seat]
             rows.append(row)
         if self.config.format == "cash":
             rows.sort(key=lambda r: r["total"], reverse=True)
         else:
             rows.sort(key=lambda r: (r["place"] is not None, r["place"] or 0, -r["stack"]))
-        return {"hands": self.hands_played, "rows": rows}
+        return {"hands": self.hands_played, "tournaments": self.tournaments_finished, "rows": rows}
 
     def _comparison(self) -> dict | None:
         if not self.shadows:
@@ -470,16 +482,16 @@ class TableSession:
     def _match_info(self) -> dict:
         levels = self._levels()
         heads_up = len(self.names) == 2
-        sng = self.config.format == "sng"
+        tournament = self.config.format == "tournament"
         return {
-            "format": "tournament" if sng else ("heads_up" if heads_up else "cash"),
+            "format": "tournament" if tournament else ("heads_up" if heads_up else "cash"),
             "players": list(self.names),
-            "num_hands": (self.config.max_hands or None) if sng else None,
+            "num_hands": (self.config.max_hands or None) if tournament else None,
             "starting_stack": self.config.stack,
             "small_blind": levels[0][0],
             "big_blind": levels[0][1],
             "blind_levels": [list(level) for level in levels],
-            "hands_per_level": self.config.hands_per_level if self.config.format == "sng" else None,
+            "hands_per_level": self.config.hands_per_level if tournament else None,
             "act_timeout": None,
         }
 
@@ -500,9 +512,12 @@ class TableSession:
             limit = self.config.max_hands
             while not self._stop.is_set():
                 alive = [i for i, s in enumerate(self.stacks) if s > 0]
-                if self.config.format == "sng" and (len(alive) < 2 or (limit and self.hand_no >= limit)):
-                    self._finish_sng(alive)
-                    return
+                if self.config.format == "tournament" and (len(alive) < 2 or (limit and self.hand_no >= limit)):
+                    self._finish_tournament(alive)
+                    if not self._between_tournaments():
+                        return
+                    self._new_tournament()
+                    continue
                 self._play_hand()
                 if not self._stop.is_set():
                     self._between_hands()
@@ -534,7 +549,7 @@ class TableSession:
                 raise RuntimeError(f"{self.names[seat]} failed to load:\n" + "\n".join(player.stats.errors))
             player.match_start(dict(info, your_name=player.name, your_seat=seat))
             self.players[seat] = player
-        if self.config.mode == "play" and self.config.format == "cash":
+        if self.config.mode == "play":
             for spec in self.config.compare:
                 name = self.profiles[spec]["name"]
                 shadow = _Shadow(name, self.available[spec], seat_paths, self.names, self.your_seat)
@@ -557,16 +572,18 @@ class TableSession:
         while self.stacks[self.button] == 0:
             self.button = (self.button + 1) % n
         levels = self._levels()
-        small, big = levels[min(self.hand_no // cfg.hands_per_level, len(levels) - 1)] if cfg.format == "sng" else levels[0]
+        tournament = cfg.format == "tournament"
+        small, big = levels[min(self.hand_no // cfg.hands_per_level, len(levels) - 1)] if tournament else levels[0]
         active = [i for i in range(n) if self.stacks[i] > 0]
-        deck = deal_deck(self.seed, self.hand_no)
+        deck = deal_deck(self.seed, f"{self.tournament_no}.{self.hand_no}")
         starting = [self.stacks[i] for i in active]
         hand = Hand(starting, active.index(self.button), small, big, deck, names=[self.names[i] for i in active], hand_id=self.hand_no + 1)
         with self._cond:
             self.hand, self.active, self.blinds, self.result = hand, active, (small, big), None
             self.last_actions = {active[e["seat"]]: describe(e) for e in hand.history}
             self.status = "running"
-            self._note(f"Hand {hand.hand_id}: {self.names[self.button]} has the button, blinds {small:,}/{big:,}", "hand")
+            title = f"Tournament {self.tournament_no}, hand {hand.hand_id}" if tournament else f"Hand {hand.hand_id}"
+            self._note(f"{title}: {self.names[self.button]} has the button, blinds {small:,}/{big:,}", "hand")
             self._note_board(0)
             self._publish()
 
@@ -601,14 +618,13 @@ class TableSession:
         with self._cond:
             for k, seat in enumerate(active):
                 self.stacks[seat] = hand.seats[k].stack
-                if cfg.format == "cash":
-                    self.totals[seat] += hand.winnings[k]
+                self.totals[seat] += hand.winnings[k]
             self._big_blind_seat = active[big_blind_of(hand)]
             self.hands_played += 1
             self.result = self._summarize(hand, active)
             self._note_shows(hand, active)
             self._note_pots()
-            if cfg.format == "sng":
+            if tournament:
                 self._place_busted(active, starting)
             self._hand_closed = False  # you can still choose to show until the next hand
             self.status = "hand_over"
@@ -629,7 +645,8 @@ class TableSession:
             if self.players[seat]:
                 self.players[seat].hand_end(hand.result_for(k))
         if self._hand_log:
-            self._hand_log.write(hand)
+            extra = {"tournament": self.tournament_no} if self.config.format == "tournament" else {}
+            self._hand_log.write(hand, **extra)
 
     def _note_shows(self, hand: Hand, active: list[int]) -> None:
         order = [(hand.button + j) % hand.n for j in range(1, hand.n + 1)]
@@ -667,10 +684,14 @@ class TableSession:
                 self._note(f"{who} {verb} {what}{with_hand}", "win")
 
     def _compare(self, hand: Hand, active: list[int], small: int, big: int, deck: list[int]) -> None:
-        stacks = [self.config.stack] * len(active)
+        """Replay the hand you just played with each comparison bot in your seat:
+        the same cards, stacks, button and blinds (so it works in tournaments too)."""
+        if self.your_seat not in active:
+            return  # you're out of this tournament
+        stacks = [s.start_stack for s in hand.seats]
         bots = {}
         for shadow in self.shadows:
-            bots[shadow.name] = shadow.play(stacks, hand.button, small, big, deck, hand.hand_id)
+            bots[shadow.name] = shadow.play(active, stacks, hand.button, small, big, deck, hand.hand_id)
             if self._stop.is_set():
                 return
         with self._cond:
@@ -729,18 +750,62 @@ class TableSession:
         for seat in sorted(busted, key=lambda s: self.places[s]):
             self._note(f"{self.names[seat]} is out in {_ordinal(self.places[seat])} place", "out")
 
-    def _finish_sng(self, alive: list[int]) -> None:
+    def _finish_tournament(self, alive: list[int]) -> None:
         with self._cond:
             assign_places(self.places, alive, 1, lambda seat: self.stacks[seat])
             if len(alive) > 1:
                 self._note(f"That's {self.hand_no} hands: the rest are ranked by chips", "hand")
             winners = [seat for seat in alive if self.places[seat] == 1]
+            for seat in winners:  # a tie for first splits the win
+                self.tournament_wins[seat] += 1 / len(winners)
             if len(winners) == 1:
                 winner = "You won" if winners[0] == self.your_seat else f"{self.names[winners[0]]} wins"
-                self._note(f"{winner} the sit-and-go!", "win")
+                self._note(f"{winner} tournament {self.tournament_no}!", "win")
+            else:
+                self._note(f"{' and '.join(self.names[s] for s in winners)} share tournament {self.tournament_no}", "win")
+            self.tournaments_finished += 1
             self.status = "finished"
             self._publish()
-        self._stop.wait()
+
+    def _between_tournaments(self) -> bool:
+        """Show the result. Watching, the next tournament starts after a few seconds;
+        playing, it waits for you to press Next tournament. False if the table closed."""
+        watching = self.config.mode == "watch"
+        pause = 5.0 if self.config.pause_after_hand is None else max(1.0, self.config.pause_after_hand)
+        deadline = time.monotonic() + pause
+        with self._cond:
+            self._skip_wait = False
+            while not self._stop.is_set():
+                if self._skip_wait:
+                    break
+                if watching and not self.paused:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._cond.wait(remaining)
+                else:
+                    self._cond.wait(0.25)
+            self._skip_wait = False
+        return not self._stop.is_set()
+
+    def _new_tournament(self) -> None:
+        """Everyone back to the starting chips for the next tournament."""
+        info = self._match_info()
+        for seat, player in enumerate(self.players):
+            if player:
+                player.match_start(dict(info, your_name=player.name, your_seat=seat))
+        with self._cond:
+            n = len(self.names)
+            self.tournament_no += 1
+            self.stacks = [self.config.stack] * n
+            self.places = [None] * n
+            self.hand_no = 0
+            self.button = secrets.randbelow(n)
+            self._big_blind_seat = None
+            self.hand, self.result, self.last_actions = None, None, {}
+            self._note(f"Tournament {self.tournament_no}: everyone starts again with {self.config.stack:,} chips", "hand")
+            self.status = "running"
+            self._publish()
 
     def _pace(self) -> bool:
         """Wait before a bot acts: the speed delay, or while paused until you step."""
