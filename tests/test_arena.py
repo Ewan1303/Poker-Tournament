@@ -85,7 +85,8 @@ def test_watching_a_sit_and_go_to_the_end():
         snap = until(session, lambda s: s["status"] == "finished", timeout=120)
     finally:
         session.stop()
-    assert sorted(row["place"] for row in snap["scoreboard"]["rows"]) == [1, 2, 3]
+    places = sorted(row["place"] for row in snap["scoreboard"]["rows"])
+    assert places[0] == 1 and sum(places) == 1 + 2 + 3  # players out on the same hand may share, e.g. 2.5 and 2.5
     assert sum(seat["stack"] for seat in snap["seats"]) == 3 * 10_000
     assert any(e["kind"] == "out" for e in snap["log"])
 
