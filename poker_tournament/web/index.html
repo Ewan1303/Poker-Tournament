@@ -25,6 +25,7 @@
             <div class="felt">
               <div class="felt-logo">POKER TOURNAMENT</div>
               <div class="pot" id="pot"></div>
+              <div class="side-pots" id="side-pots"></div>
               <div class="board" id="board"></div>
               <div class="message" id="message"></div>
             </div>
@@ -87,7 +88,7 @@
       </div>
       <div class="choice-row">
         <label class="choice"><input type="radio" name="format" value="cash"><span><b>Cash game</b>Everyone gets fresh chips every hand</span></label>
-        <label class="choice"><input type="radio" name="format" value="sng"><span><b>Sit-and-go</b>Blinds rise until one player has every chip</span></label>
+        <label class="choice"><input type="radio" name="format" value="sng"><span><b>Tournament</b>Blinds rise until one player has every chip, or the hand limit</span></label>
       </div>
       <fieldset>
         <legend>Bots at the table <small id="seat-count"></small></legend>
@@ -106,6 +107,7 @@
         <label>Small blind <input type="number" name="small_blind" min="1"></label>
         <label>Big blind <input type="number" name="big_blind" min="1"></label>
         <label class="sng-only">Blinds up every <input type="number" name="hands_per_level" min="1"> hands</label>
+        <label class="sng-only" title="After this many hands the game is decided on chips. 0 plays until one player has everything.">Stop after <input type="number" name="max_hands" min="0"> hands</label>
       </fieldset>
       <p class="form-error" id="setup-error"></p>
       <div class="dialog-buttons">

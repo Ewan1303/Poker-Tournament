@@ -209,6 +209,28 @@ main { flex: 1; min-height: 0; }
 }
 .seat.button .dealer { display: flex; }
 
+.odds {
+  position: absolute;
+  top: -0.75em;
+  left: -0.6em;
+  padding: 0.08em 0.5em;
+  border-radius: 999px;
+  background: #2b3647;
+  border: 1px solid #45546a;
+  color: #dfe6ee;
+  font-weight: 800;
+  font-size: 0.85em;
+  z-index: 2;
+}
+.odds.leading { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+.side-pots { display: flex; gap: 0.5em; font-size: 0.85em; }
+.side-pots:empty { display: none; }
+.side-pots span { background: rgba(0, 0, 0, 0.28); border-radius: 999px; padding: 0.1em 0.7em; color: #e8e0c8; }
+
+.showed { color: var(--gold); font-weight: 600; font-size: 0.85em; margin-left: 0.3em; }
+.act.show { flex: 0 0 auto; background: #1d2a3d; border-color: #35527a; color: #bcd4f5; }
+
 .bubble {
   margin-top: 0.35em;
   padding: 0.12em 0.6em;
@@ -347,6 +369,15 @@ table.score td.who small { display: block; color: var(--muted); font-size: 11px;
 .track .ci { position: absolute; top: 8px; height: 2px; background: rgba(255, 255, 255, 0.55); }
 .bars .val { text-align: right; }
 .bars .record { color: var(--muted); text-align: right; }
+
+.finishes { display: grid; grid-template-columns: minmax(110px, 180px) minmax(0, 1fr); gap: 6px 10px; align-items: center; max-width: 900px; }
+.finishes .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stack-bar { display: flex; height: 20px; border-radius: 5px; overflow: hidden; background: var(--panel-2); }
+.place { height: 100%; font-size: 11px; font-weight: 700; color: #11161d; display: flex; align-items: center; justify-content: center; }
+.place.p1 { background: var(--gold); }
+.place.p2 { background: #c9d1db; }
+.place.p3 { background: #c98b5a; }
+.place.p4 { background: #5b6a7e; color: #e8edf2; }
 
 table.grid { border-collapse: separate; border-spacing: 3px; font-variant-numeric: tabular-nums; }
 table.grid th { color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 6px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

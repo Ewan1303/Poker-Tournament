@@ -76,7 +76,12 @@ function render(snap) {
   $("#status-line").innerHTML = statusLine(snap);
   renderSeats(snap);
   setHTML($("#board"), [0, 1, 2, 3, 4].map((i) => card(snap.board[i])).join(""));
-  $("#pot").textContent = snap.pot ? `Pot ${fmt(snap.pot)}` : "";
+  // With players all in for different amounts, show the main pot and each side pot.
+  // Once a hand is over the pots leave out any bet nobody called (it went back).
+  const pots = snap.pots || [];
+  const potTotal = pots.length ? pots.reduce((sum, p) => sum + p.amount, 0) : snap.pot;
+  $("#pot").textContent = potTotal ? `Pot ${fmt(potTotal)}` : "";
+  setHTML($("#side-pots"), pots.length > 1 ? pots.map((p) => `<span>${esc(p.label)} ${fmt(p.amount)}</span>`).join("") : "");
   const message = $("#message");
   message.textContent = tableMessage(snap);
   message.classList.toggle("you", snap.status === "your_turn");
@@ -148,7 +153,7 @@ function layoutSeats(snap) {
     const p = spot(seat.seat, 44, 40);
     return `<div class="seat" data-seat="${seat.seat}" style="left:${p.x}%;top:${p.y}%">
       <div class="hole"></div>
-      <div class="plate"><span class="name"></span><span class="stack"></span><div class="dealer">D</div></div>
+      <div class="plate"><span class="name"></span><span class="stack"></span><div class="dealer">D</div><div class="odds" hidden></div></div>
       <div class="bubble"></div>
       <div class="badge"></div>
     </div>`;
@@ -182,19 +187,28 @@ function renderSeats(snap) {
     const tag = seat.you && seat.name.toLowerCase() !== "you" ? '<span class="tag">you</span>' : "";
     setHTML(el.querySelector(".name"), esc(seat.name) + tag + warn);
     el.querySelector(".stack").textContent = out ? `Out · ${ordinal(seat.place)}` : fmt(seat.stack);
+    // Watching with cards face up: everyone's chance of winning from here, like on TV.
+    const odds = el.querySelector(".odds");
+    odds.hidden = seat.odds == null;
+    if (seat.odds != null) {
+      const best = Math.max(...snap.seats.map((s) => s.odds ?? 0));
+      odds.textContent = `${Math.round(100 * seat.odds)}%`;
+      odds.classList.toggle("leading", seat.odds === best && seat.odds > 0);
+    }
     const bubble = el.querySelector(".bubble");
     bubble.textContent = seat.action || "";
     bubble.className = "bubble" + (seat.action === "Fold" ? " fold" : /^(Raise|Bet)/.test(seat.action || "") ? " raise" : "");
     const badge = el.querySelector(".badge");
+    const showed = seat.showed === "chose" ? '<span class="showed">showed</span>' : "";
     if (over && winners.has(seat.seat)) {
-      badge.innerHTML = `+${fmt(seat.collected)}${seat.hand_name ? ` · ${esc(seat.hand_name)}` : ""}`;
+      badge.innerHTML = `+${fmt(seat.collected)}${seat.hand_name ? ` · ${esc(seat.hand_name)}` : ""} ${showed}`;
       badge.className = "badge";
     } else {
-      badge.textContent = over && seat.hand_name ? seat.hand_name : "";
+      badge.innerHTML = `${over && seat.hand_name ? esc(seat.hand_name) : ""} ${showed}`;
       badge.className = "badge dim";
     }
     const bet = document.querySelector(`.bet[data-seat="${seat.seat}"]`);
-    bet.hidden = !seat.bet;
+    bet.hidden = !seat.bet || over; // once the hand is over the chips have gone to the winner
     if (seat.bet) setHTML(bet, `<span class="chip"></span>${fmt(seat.bet)}`);
   }
 }
@@ -214,9 +228,17 @@ function renderActions(snap) {
     return;
   }
   const you = snap.you;
-  const id = you ? you.decision : null;
+  const id = you ? you.decision : snap.can_show ? `show:${snap.hand_no}` : null;
   if (id === decisionShown) return; // leave the slider where you put it
   decisionShown = id;
+  if (!you && snap.can_show) {
+    // Nobody made you show (everyone folded, or you did): you can show anyway, like at a real table.
+    box.className = "actions";
+    box.innerHTML = `<div class="action-row"><span class="grow to-call">Nobody saw your cards. Show them to the table?</span>
+      <button class="btn act show" id="show-button">Show my cards<span class="key">H</span></button></div>`;
+    $("#show-button").addEventListener("click", showMine);
+    return;
+  }
   if (!you) {
     box.className = "actions waiting";
     box.innerHTML = `<div class="action-row">
@@ -257,6 +279,17 @@ function renderActions(snap) {
   amount?.addEventListener("input", () => setAmount(amount.value));
   box.querySelectorAll(".preset").forEach((button) => button.addEventListener("click", () => setAmount(button.dataset.amount)));
   box.querySelectorAll("[data-act]").forEach((button) => button.addEventListener("click", () => decide(button.dataset.act)));
+}
+
+async function showMine() {
+  if (!state?.can_show) return;
+  const button = $("#show-button");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/show", {});
+  } catch (error) {
+    $("#message").textContent = error.message;
+  }
 }
 
 async function decide(type) {
@@ -314,7 +347,8 @@ document.addEventListener("keydown", (event) => {
   else if (you && key === "r" && you.can_raise) {
     event.preventDefault();
     $("#raise-amount")?.select();
-  } else if (key === "p") control({ paused: !state?.paused });
+  } else if (key === "h" && state?.can_show) showMine();
+  else if (key === "p") control({ paused: !state?.paused });
   else if (key === "n") control({ next_hand: true });
   else if (key === "s" && state?.paused) control({ step: true });
 });
@@ -407,7 +441,7 @@ async function openSetup() {
   form.elements.format.value = config.format || "cash";
   $("#bot-list").innerHTML = botList.map((bot) => botCard(bot, (config.bots || []).includes(bot.name))).join("");
   $("#compare-list").innerHTML = botList.map((bot) => pick("compare", bot, (config.compare || []).includes(bot.name))).join("");
-  for (const key of ["player_name", "stack", "small_blind", "big_blind", "hands_per_level"]) {
+  for (const key of ["player_name", "stack", "small_blind", "big_blind", "hands_per_level", "max_hands"]) {
     form.elements[key].value = config[key] ?? "";
   }
   $("#setup-error").textContent = "";
@@ -444,6 +478,7 @@ form.addEventListener("submit", async (event) => {
     small_blind: Number(data.get("small_blind")),
     big_blind: Number(data.get("big_blind")),
     hands_per_level: Number(data.get("hands_per_level")) || 10,
+    max_hands: Math.max(0, Number(data.get("max_hands")) || 0),
     speed: state?.speed || "normal",
   };
   try {
@@ -513,6 +548,44 @@ function renderRun(run) {
   const config = run.config;
   let html = `<h1>${esc(run.name)}</h1><p class="sub">${run.done ? "Finished" : '<span class="live">In progress</span>'} · ${run.bots.length} bots${run.created ? ` · ${new Date(run.created).toLocaleString()}` : ""}</p>`;
   const errors = [];
+  if (run.tournament) {
+    const t = run.tournament;
+    const board = t.leaderboard;
+    const limit = config.max_hands ? `decided on chips after ${config.max_hands} hands` : "played to the end";
+    html += `<h3>Tournaments</h3><p class="sub">${fmt(t.tournaments)} tournaments with all ${t.players} bots · ${fmt(config.stack)} chips each · ${limit} · `
+      + `${Math.round(100 * t.finished_share)}% ended with one bot holding every chip · bars show win %, lines the 95% range</p>`;
+    if (t.progress) html += progress(...t.progress, "tournaments");
+    if (board.length) {
+      const scale = Math.max(0.01, ...board.map((row) => row.win_rate + row.win_rate_range));
+      const at = (value) => (100 * Math.max(0, value)) / scale;
+      html += `<div class="bars"><span></span><span class="head">Bot</span><span class="head">Tournaments won</span><span class="head" style="text-align:right">Win %</span><span class="head" style="text-align:right">Wins</span>`;
+      board.forEach((row, i) => {
+        html += `<span class="rank">${i + 1}</span><span class="name" title="${esc(row.bot)}">${esc(row.bot)}</span>
+          <div class="track"><div class="fill pos" style="left:0;width:${at(row.win_rate)}%"></div>
+            <div class="ci" style="left:${at(row.win_rate - row.win_rate_range)}%;width:${at(row.win_rate + row.win_rate_range) - at(row.win_rate - row.win_rate_range)}%"></div></div>
+          <span class="val">${(100 * row.win_rate).toFixed(1)}% <span class="dim">± ${(100 * row.win_rate_range).toFixed(1)}</span></span>
+          <span class="record">${Number.isInteger(row.wins) ? row.wins : row.wins.toFixed(1)}</span>`;
+        for (const error of row.errors || []) errors.push(`${row.bot}: ${error.trim().split("\n").pop()}`);
+      });
+      html += `</div><table class="plain" style="margin-top:14px"><tr><th>#</th><th>Bot</th><th>Avg finish</th><th>Top 3</th><th>Avg chips won</th><th>Avg decision</th></tr>`;
+      board.forEach((row, i) => {
+        html += `<tr><td>${i + 1}</td><td>${esc(row.bot)}</td><td>${row.avg_place.toFixed(2)}</td><td>${Math.round(100 * row.top3_rate)}%</td>
+          <td class="${tone(row.avg_chips)}">${signed(row.avg_chips)}</td><td>${row.avg_ms.toFixed(1)} ms</td></tr>`;
+      });
+      html += `</table>`;
+      if (t.players <= 10) {
+        // How often each bot finished in each place: 1st on the left.
+        html += `<h3>Finishing positions</h3><p class="sub">Share of tournaments each bot finished in each place, 1st on the left</p><div class="finishes">`;
+        board.forEach((row) => {
+          const segments = row.finishes.map((share, place) => share > 0
+            ? `<div class="place p${Math.min(place + 1, 4)}" style="width:${100 * share}%;opacity:${place < 3 ? 1 : Math.max(0.25, 1 - place / t.players)}" title="${ordinal(place + 1)}: ${(100 * share).toFixed(1)}%">${share >= 0.08 ? Math.round(100 * share) + "%" : ""}</div>`
+            : "").join("");
+          html += `<span class="name">${esc(row.bot)}</span><div class="stack-bar">${segments}</div>`;
+        });
+        html += `</div>`;
+      }
+    }
+  }
   if (run.heads_up) {
     const board = run.heads_up.leaderboard;
     html += `<h3>Heads-up round robin</h3><p class="sub">${fmt(config.hands)} deals per pairing, each played from both seats · ${fmt(config.stack / config.big_blind)} big blinds deep · bars show bb/100, lines the 95% range</p>`;
@@ -555,16 +628,6 @@ function renderRun(run) {
       }
       html += `</table></div>`;
     }
-  }
-  if (run.sng) {
-    html += `<h3>Sit-and-go</h3><p class="sub">Points: 1 for a win down to 0 for last place</p>`;
-    if (run.sng.progress) html += progress(...run.sng.progress, "games");
-    html += `<table class="plain"><tr><th>#</th><th>Bot</th><th>Avg points</th><th>Wins</th><th>Games</th><th>Avg place</th></tr>`;
-    run.sng.leaderboard.forEach((row, i) => {
-      html += `<tr><td>${i + 1}</td><td>${esc(row.bot)}</td><td>${row.avg_points.toFixed(3)}</td><td>${row.wins}</td><td>${row.games}</td><td>${row.avg_place.toFixed(2)}</td></tr>`;
-      for (const error of row.errors || []) errors.push(`${row.bot}: ${error.trim().split("\n").pop()}`);
-    });
-    html += `</table>`;
   }
   if (errors.length) html += `<h3>Bot errors</h3>${[...new Set(errors)].map((e) => `<p class="errors">${esc(e)}</p>`).join("")}`;
   $("#run").innerHTML = html;

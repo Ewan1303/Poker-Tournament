@@ -2,9 +2,9 @@
 
 Build a poker bot, train it however you like, and play it against everyone else's.
 
-Everyone clones this repo and builds a bot. It can be hand-written rules, simulation, machine learning, reinforcement learning, or anything else that runs in Python. You submit it before the deadline. The organizer then runs every bot against every other bot on one machine and publishes the leaderboard here. There are several rounds. After each one you get the results and the hand histories, so you can study the field and come back stronger.
+Everyone clones this repo and builds a bot. It can be hand-written rules, simulation, machine learning, reinforcement learning, or anything else that runs in Python. You submit it before the deadline. The organizer then puts all the bots at the table together on one machine and publishes the leaderboard here. There are several rounds. After each one you get the results and the hand histories, so you can study the field and come back stronger.
 
-The game is **no-limit Texas hold'em**. The main event is **heads-up** (one against one) and **duplicate**: every deal is played twice with the seats swapped, so neither bot gets the better cards. Every bot plays every other bot, and the winner is the bot that wins the most chips on average.
+The game is **no-limit Texas hold'em tournaments**. Every bot starts with the same chips and plays until one has them all, or until a 100-hand limit, when the rest are ranked by chips. The organizer simulates hundreds or thousands of tournaments, and **the bot that wins the most is the champion**.
 
 ```
  you                                         organizer
@@ -15,7 +15,7 @@ The game is **no-limit Texas hold'em**. The main event is **heads-up** (one agai
                                  │
                      poker validate ─► submit ─────►  poker collect / zips
                                                           │
-                                                       poker run  (every bot vs every bot)
+                                                       poker run  (1,000 tournaments, every bot)
                                                           │
  study results & hand histories  ◄──────────────────  results/<round>/leaderboard.md
 ```
@@ -84,11 +84,11 @@ poker watch
 poker results
 ```
 
-- **`poker play`** opens a table in your browser where you play against the bots. Use the buttons, the raise slider, or the keys F (fold), C (check/call) and R (raise).
-- **`poker watch`** seats the bots around one table with every card face up. You can pause, step one action at a time, or speed up to Instant to watch thousands of hands.
-- **`poker results`** shows tournament leaderboards as charts.
+- **`poker play`** opens a table in your browser where you play against the bots. Use the buttons, the raise slider, or the keys F (fold), C (check/call) and R (raise). You see only what a real player would: bots' cards are revealed at a showdown, or when a bot chooses to show them. When everyone folds to you, nobody sees your cards unless you press **Show my cards** (H).
+- **`poker watch`** seats the bots around one table with every card face up, and each player's chance of winning from that point as a percentage, like on TV. That's also how you check a bot isn't cheating: you can see exactly what it held for every decision. You can pause, step one action at a time, or speed up to Instant to watch thousands of hands.
+- **`poker results`** shows tournament leaderboards as charts: wins, finishing positions, and the heads-up grid if you ran one.
 
-Every bot in `bots/` and in your `my_bots/` folder is available, or you can name the ones you want: `poker play equity_bot my_bots/alice`. Choose **New game** in the page to switch between playing and watching, between a cash game and a sit-and-go, or to change who is at the table.
+Every bot in `bots/` and in your `my_bots/` folder is available, or you can name the ones you want: `poker play equity_bot my_bots/alice`. Choose **New game** in the page to switch between playing and watching, or between a cash game and a tournament with a hand limit, and to change who is at the table. Side pots appear on the table whenever someone is all in for less.
 
 ![Playing against the bots](docs/images/play.jpg)
 
@@ -130,13 +130,14 @@ The engine is plain Python with no dependencies, so you can generate as much dat
 
 ## Rules in brief
 
-- 100 big blinds each at the start of every hand (10,000 chips, blinds 50/100). Every pair of bots plays 1,000 deals from both seats.
-- Ranking: big blinds won per 100 hands (bb/100), averaged over all opponents.
+- **Tournaments:** 10,000 chips each, blinds 50/100 rising every 20 hands. A tournament ends when one bot has every chip, or after 100 hands, when everyone left is ranked by chips. With more than 10 bots, several tables merge into a final table.
+- **Ranking:** most tournaments won, out of hundreds or thousands. Average finish and average chips won are shown too.
+- **Real showdown rules:** reach the end of the betting and you show; win because everyone folded and you choose whether to show.
 - 1 second per decision, 60 seconds to load, one CPU core, no GPU, 50 MB per bot.
 - Standard library plus numpy, scipy, scikit-learn, pandas and PyTorch only.
 - No reading or writing files outside your folder, no network, no collusion.
 
-The full rules, the optional sit-and-go side event and the round schedule are in [RULES.md](RULES.md).
+The full rules, the optional heads-up format and the round schedule are in [RULES.md](RULES.md).
 
 ## Running the tournament
 

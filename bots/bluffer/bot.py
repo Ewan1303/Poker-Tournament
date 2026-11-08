@@ -8,7 +8,7 @@ NAME = "Bluffing Bella"
 STYLE = "Bluffs a lot"
 DESCRIPTION = (
     "Bets whenever nobody else has, holding anything at all, but backs down when someone fights back. "
-    "Call her with decent hands, and raise her bets to make her fold."
+    "When you fold she likes to show you what you folded to. Call her with decent hands, and raise her bets."
 )
 
 
@@ -25,3 +25,7 @@ class Bot(PokerBot):
         # Someone bet or raised: carry on only with a hand worth the price.
         equity = estimate_equity(obs.hole_cards, obs.board, max(1, len(obs.active_opponents)), 150, self.rng)
         return Action.call() if equity > obs.pot_odds + 0.1 else Action.fold()
+
+    def show_cards(self, result):
+        # Won without a showdown? Half the time she flips her cards over to needle you.
+        return result.net > 0 and self.rng.random() < 0.5

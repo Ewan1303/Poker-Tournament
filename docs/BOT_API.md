@@ -9,7 +9,7 @@ alice/
 └── model.npz     model weights and any other files your bot needs
 ```
 
-For each half of each match, and for each sit-and-go game, the tournament starts a **fresh Python process** for your bot. That process imports `bot.py` and creates `Bot()`. Its working directory is the bot folder, but it's safer to build paths from `Path(__file__).parent`. `print()` output goes to a log file the organizer can read, not to the game.
+The tournament runs your bot in its own **Python process**: a fresh one for each batch of tournaments, and for each half of a heads-up match. That process imports `bot.py` and creates `Bot()`. Its working directory is the bot folder, but it's safer to build paths from `Path(__file__).parent`. `print()` output goes to a log file the organizer can read, not to the game.
 
 ## Naming your bot
 
@@ -33,17 +33,30 @@ class Bot(PokerBot):
     def __init__(self):                 # once per process; load models here (60 s limit)
         self.weights = Path(__file__).parent / "model.npz"
 
-    def on_match_start(self, info):     # once per match half or sit-and-go game (optional)
+    def on_match_start(self, info):     # before each tournament (or heads-up match half) (optional)
         ...
 
     def act(self, obs):                 # every time it's your turn: return an Action
         return Action.call()
 
+    def show_cards(self, result):       # the hand ended and nobody made you show: show anyway? (optional)
+        return False
+
     def on_hand_end(self, result):      # after every hand, even ones you folded (optional)
         ...
 ```
 
-`act` and `on_hand_end` must each return within the decision time limit (1 second by default). `__init__` and `on_match_start` get 60 seconds. If a call raises an exception or runs out of time, your bot checks if it can and otherwise folds, and the failure goes on its record.
+`act`, `show_cards` and `on_hand_end` must each return within the decision time limit (1 second by default). `__init__` and `on_match_start` get 60 seconds. If a call raises an exception or runs out of time, your bot checks if it can and otherwise folds, and the failure goes on its record.
+
+In a run of tournaments, one bot object plays a batch of them in a row (each starting with `on_match_start`), so it can remember what it has learned about opponents within the batch.
+
+## Showing your cards
+
+The table follows real poker. At a **showdown** (betting finished on the river with two or more players left), everyone still in shows their cards automatically. Otherwise cards stay hidden, for example when everyone folded to your bet or you folded. But a player may choose to show them anyway, to advertise a bluff or to make opponents think you only bet strong hands.
+
+If your bot defines `show_cards`, it's called whenever a hand ends without your cards being shown. Return `True` to show them to the table. `result` is the hand as you see it, so `result.net` says whether you won. Bots without `show_cards` are never asked, at no cost.
+
+Every bot sees shown cards in `on_hand_end`. Each entry in `result.players` has `hole_cards` set when they were shown, and `shown` says why: `"showdown"`, or `"chose"` when the player showed voluntarily. Watching who shows what is a good way to read opponents.
 
 ## Actions
 
@@ -103,11 +116,12 @@ Each entry in `obs.history`, and in `result.history`, looks like this:
 
 | Field | Meaning |
 |---|---|
-| `format` | `"heads_up"` or `"sng"` in the tournament. `poker play` and `poker watch` can also send `"cash"`: three or more players, each starting every hand with the same chips |
+| `format` | `"tournament"` (the main event) or `"heads_up"`. `poker play` and `poker watch` can also send `"cash"`: three or more players, each starting every hand with the same chips |
 | `your_name`, `players` | Your name, and the names of everyone in the match or game |
 | `starting_stack`, `small_blind`, `big_blind` | Chips and opening blinds |
-| `num_hands` | Hands in this half of a heads-up match (`None` in a sit-and-go) |
-| `blind_levels`, `hands_per_level` | Sit-and-go blind schedule: `[[small, big], ...]`, rising every `hands_per_level` hands |
+| `num_hands` | Hands in this half of a heads-up match, or a tournament's hand limit: after this many hands it's decided on chips (`None` means no limit) |
+| `blind_levels`, `hands_per_level` | A tournament's blind schedule: `[[small, big], ...]`, rising every `hands_per_level` hands |
+| `table_size` | Most players at one table in a tournament (more start at several tables) |
 | `act_timeout` | Seconds allowed per decision |
 
 ## HandResult (`result`, passed to `on_hand_end`)
@@ -117,13 +131,13 @@ Each entry in `obs.history`, and in `result.history`, looks like this:
 | `net` | Chips you won (positive) or lost (negative) |
 | `seat`, `hole_cards`, `board` | Your seat and cards, and the board as far as it was dealt |
 | `showdown` | Whether the hand reached a showdown |
-| `players` | For each seat: `name`, `net`, `start_stack`, `end_stack`, `folded`, and `hole_cards`, which is `None` unless the cards are yours or were shown at showdown |
+| `players` | For each seat: `name`, `net`, `start_stack`, `end_stack`, `folded`, `hole_cards` (`None` unless they're yours or were shown) and `shown` (`"showdown"`, `"chose"` or `None`) |
 | `history` | Every action in the hand |
 
 ## Seats, the button and names
 
 - **Heads-up:** you keep the same seat for a whole half of a match, and the button alternates each hand. Stacks reset to the starting stack every hand.
-- **Sit-and-go:** seats are renumbered each hand as players are knocked out, so track opponents by `name`, not seat. Stacks carry over and blinds rise.
+- **Tournament:** seats are renumbered each hand as players are knocked out, and with several tables you may be moved to another table, so track opponents by `name`, not seat. Stacks carry over and blinds rise. Near the hand limit, chips matter more than survival: everyone left is ranked by their stack.
 
 ## Useful tools
 

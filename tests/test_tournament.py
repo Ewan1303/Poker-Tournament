@@ -46,14 +46,14 @@ def test_sit_and_go_finishes_with_places():
 
 def test_tournament_round_and_resume(tmp_path):
     entries = discover_entries(["random_bot", "calling_station", "ml_example"])
-    config = TournamentConfig(name="test", formats=("heads_up", "sng"), hands=20, games=3, in_process=True)
+    config = TournamentConfig(name="test", formats=("heads_up", "tournament"), hands=20, tournaments=3, max_hands=40, in_process=True)
     summary = run_tournament(entries, config, tmp_path / "test", echo=lambda line: None)
     board = summary["heads_up"]["leaderboard"]
     assert {row["bot"] for row in board} == {"random_bot", "calling_station", "ml_example"}
     assert abs(sum(row["bb_per_100"] for row in board)) < 1e-6  # zero-sum
-    assert len(summary["sng"]["leaderboard"]) == 3
+    assert len(summary["tournament"]["leaderboard"]) == 3
     assert (tmp_path / "test" / "leaderboard.md").exists()
-    assert len(list((tmp_path / "test" / "hands").glob("*.jsonl.gz"))) == 3 + 3  # one per pairing, one per game
+    assert len(list((tmp_path / "test" / "hands").glob("*.jsonl.gz"))) == 3 + 3  # one per pairing, one per batch of tournaments
     with gzip.open(tmp_path / "test" / "hands" / "random_bot__vs__calling_station.jsonl.gz", "rt") as f:
         hands = [json.loads(line) for line in f]
     assert len(hands) == 40 and {h["half"] for h in hands} == {1, 2}
@@ -63,13 +63,14 @@ def test_tournament_round_and_resume(tmp_path):
 
     lines = []
     again = run_tournament(entries, config, tmp_path / "test", resume=True, echo=lines.append)
-    assert "(0 of 6 half-matches to play)" in lines[0]
+    assert any("(0 of 6 half-matches to play)" in line for line in lines)
+    assert any("(0 to play)" in line for line in lines)
     assert again["heads_up"]["leaderboard"] == board
 
 
 def test_nothing_written_during_a_run_reveals_the_seed(tmp_path):
     entries = discover_entries(["random_bot", "calling_station"])
-    config = TournamentConfig(name="secret", formats=("heads_up", "sng"), hands=10, games=2, seed=987654321987, in_process=True)
+    config = TournamentConfig(name="secret", formats=("heads_up", "tournament"), hands=10, tournaments=2, max_hands=20, seed=987654321987, in_process=True)
     run_tournament(entries, config, tmp_path / "secret", echo=lambda line: None)
     for path in (tmp_path / "secret").rglob("*.json"):
         if path.name not in ("run.json", "results.json"):  # those two are rewritten with the seed at the end
@@ -139,11 +140,12 @@ def test_a_failure_stops_the_round_straight_away():
 
 def test_tournament_with_separate_processes(tmp_path):
     entries = discover_entries(["random_bot", "calling_station"])
-    config = TournamentConfig(name="procs", hands=15, workers=2)
+    config = TournamentConfig(name="procs", tournaments=4, max_hands=30, workers=2)
     summary = run_tournament(entries, config, tmp_path / "procs", echo=lambda line: None)
     saved = json.loads((tmp_path / "procs" / "results.json").read_text(encoding="utf-8"))
-    assert saved["heads_up"]["leaderboard"][0]["bot"] == summary["heads_up"]["leaderboard"][0]["bot"]
-    assert all(row["failures"] == 0 for row in summary["heads_up"]["leaderboard"])
+    assert saved["tournament"]["leaderboard"][0]["bot"] == summary["tournament"]["leaderboard"][0]["bot"]
+    assert summary["tournament"]["tournaments"] == 4
+    assert all(row["failures"] == 0 for row in summary["tournament"]["leaderboard"])
 
 
 def test_features_have_the_advertised_length():

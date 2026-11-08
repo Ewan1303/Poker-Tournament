@@ -30,8 +30,14 @@ SNG_LEVELS = [
 ]  # fmt: skip
 
 
-def deal_deck(seed: object, hand_index: int) -> list[int]:
+def deal_deck(seed: object, hand_index: object) -> list[int]:
     return shuffled_deck(f"{seed}:{hand_index}")
+
+
+def blind_levels(big_blind: int) -> list[tuple[int, int]]:
+    """SNG_LEVELS scaled so the first level's big blind is `big_blind`."""
+    factor = big_blind / SNG_LEVELS[0][1]
+    return [(max(1, round(small * factor)), max(1, round(big * factor))) for small, big in SNG_LEVELS]
 
 
 class HandLog:
@@ -109,9 +115,18 @@ def play_hand(
                         "applied": applied["action"],
                     }
                 )
+    offer_shows(hand, players)
     for seat, player in enumerate(players):
         player.hand_end(hand.result_for(seat))
     return hand
+
+
+def offer_shows(hand: Hand, players: Sequence[BotPlayer | None]) -> None:
+    """Like real poker: at a showdown everyone still in shows, and anyone else
+    (a winner nobody called, or a player who folded) may show if they want to."""
+    for seat, player in enumerate(players):
+        if player is not None and hand.shown(seat) is None and player.wants_to_show(hand.result_for(seat)):
+            hand.show(seat)
 
 
 def play_heads_up(
@@ -245,76 +260,141 @@ def play_match(
     return result
 
 
-def play_sng(
+class _Table:
+    """One table in a tournament: its players in seat order, and where the button is."""
+
+    def __init__(self, seats: list[int], button: int):
+        self.seats = seats  # player numbers, in seat order
+        self.button_pos = button  # index in seats of the latest button
+        self.button_player: int | None = None
+        self.big_blind: int | None = None
+
+    def next_button(self, stacks: Sequence[int]) -> int:
+        """Index in seats of this hand's button."""
+        if self.button_player is None:
+            return self.button_pos % len(self.seats)
+        if self.button_player in self.seats:
+            previous = self.seats.index(self.button_player)
+        else:  # the last button left the table, so carry on from about the same spot
+            previous = (self.button_pos - 1) % len(self.seats)
+        last_big_blind = self.seats.index(self.big_blind) if self.big_blind in self.seats else None
+        return next_button([stacks[p] for p in self.seats], previous, last_big_blind)
+
+
+def _rebalance(tables: list[_Table], stacks: Sequence[int], table_size: int, rng: random.Random) -> list[_Table]:
+    """After players go out: break tables that aren't needed, then even the rest up."""
+    for table in tables:
+        table.seats = [p for p in table.seats if stacks[p] > 0]
+    tables = [table for table in tables if table.seats]
+    needed = max(1, math.ceil(sum(len(t.seats) for t in tables) / table_size))
+    while len(tables) > needed:
+        broken = min(tables, key=lambda t: len(t.seats))
+        tables.remove(broken)
+        for player in broken.seats:
+            min(tables, key=lambda t: len(t.seats)).seats.append(player)
+    while True:
+        biggest = max(tables, key=lambda t: len(t.seats))
+        smallest = min(tables, key=lambda t: len(t.seats))
+        if len(biggest.seats) - len(smallest.seats) <= 1:
+            return tables
+        movable = [p for p in biggest.seats if p != biggest.button_player] or biggest.seats
+        mover = rng.choice(movable)
+        biggest.seats.remove(mover)
+        smallest.seats.append(mover)
+
+
+def play_tournament(
     players: Sequence[BotPlayer],
     seed: object,
     *,
     stack: int = DEFAULT_STACK,
     levels: Sequence[tuple[int, int]] = SNG_LEVELS,
     hands_per_level: int = 20,
-    max_hands: int = 3000,
+    table_size: int = 10,
+    max_hands: int | None = 100,
     act_timeout: float | None = None,
     hand_log: HandLog | None = None,
     log_extra: dict | None = None,
 ) -> dict:
-    """Play a sit-and-go to the end with started players in seat order.
+    """A freezeout tournament between started players, seated at random.
 
-    Everyone starts with `stack`; the blinds go up every `hands_per_level`
-    hands. Returns {"names", "places", "hands", "stacks"} where places[i] is
-    the finishing place of seat i (1 = winner; players who bust on the same
-    hand are placed by the chips they started that hand with, ties sharing).
+    Everyone starts with `stack`, the blinds go up every `hands_per_level`
+    hands, and a player who loses all their chips is out. It ends when one
+    player has every chip, or after `max_hands` hands at a table, when everyone
+    left is ranked by chips (None means no limit). With more players than fit
+    at one table they're split across tables, which are balanced as players go
+    out and merge into a final table.
+
+    Returns {"names", "places", "stacks", "hands", "rounds", "finished"}:
+    places[i] is player i's finishing place (1 = winner; players out on the same
+    round are ranked by the chips they had before it, ties sharing), stacks are
+    the final chip counts, and finished says whether one player won every chip.
     """
     n = len(players)
+    if n < 2:
+        raise ValueError("a tournament needs at least two players")
     names = [p.name for p in players]
-    for seat, player in enumerate(players):
-        player.match_start(
-            {
-                "format": "sng",
-                "your_name": player.name,
-                "your_seat": seat,
-                "players": names,
-                "num_hands": None,
-                "starting_stack": stack,
-                "small_blind": levels[0][0],
-                "big_blind": levels[0][1],
-                "blind_levels": [list(level) for level in levels],
-                "hands_per_level": hands_per_level,
-                "act_timeout": act_timeout,
-            }
-        )
+    rng = random.Random(f"{seed}:seating")
+    order = list(range(n))
+    rng.shuffle(order)
+    count = math.ceil(n / table_size)
+    tables = [_Table(order[t::count], rng.randrange(n)) for t in range(count)]
+    info = {
+        "format": "tournament",
+        "players": names,
+        "num_hands": max_hands,
+        "starting_stack": stack,
+        "small_blind": levels[0][0],
+        "big_blind": levels[0][1],
+        "blind_levels": [list(level) for level in levels],
+        "hands_per_level": hands_per_level,
+        "table_size": table_size,
+        "act_timeout": act_timeout,
+    }
+    for player in players:
+        player.match_start(dict(info, your_name=player.name))
     stacks = [stack] * n
     places = [0.0] * n
-    button = random.Random(f"{seed}:button").randrange(n)
-    big_blind_seat = None
-    hand_no = 0
-    while sum(1 for s in stacks if s > 0) > 1 and hand_no < max_hands:
-        small, big = levels[min(hand_no // hands_per_level, len(levels) - 1)]
-        if hand_no:
-            button = next_button(stacks, button, big_blind_seat)
-        active = [i for i in range(n) if stacks[i] > 0]
-        before = {i: stacks[i] for i in active}
-        hand = play_hand(
-            [players[i] for i in active],
-            [stacks[i] for i in active],
-            active.index(button),
-            small,
-            big,
-            deal_deck(seed, hand_no),
-            hand_id=hand_no + 1,
-        )
-        for k, i in enumerate(active):
-            stacks[i] = hand.seats[k].stack
-        big_blind_seat = active[big_blind_of(hand)]
-        hand_no += 1
-        if hand_log:
-            hand_log.write(hand, **(log_extra or {}))
-        busted = [i for i in active if stacks[i] == 0]
+    rounds = hands = 0
+    while sum(1 for s in stacks if s > 0) > 1 and (max_hands is None or rounds < max_hands):
+        small, big = levels[min(rounds // hands_per_level, len(levels) - 1)]
+        busted: list[int] = []
+        before: dict[int, int] = {}
+        for t, table in enumerate(tables):
+            if len(table.seats) < 2:
+                continue
+            seats = table.seats
+            button = table.next_button(stacks)
+            hand = play_hand(
+                [players[p] for p in seats],
+                [stacks[p] for p in seats],
+                button,
+                small,
+                big,
+                deal_deck(seed, f"{rounds}.{t}"),
+                hand_id=hands + 1,
+            )
+            hands += 1
+            for k, p in enumerate(seats):
+                before[p] = stacks[p]
+                stacks[p] = hand.seats[k].stack
+            table.button_pos, table.button_player = button, seats[button]
+            table.big_blind = seats[big_blind_of(hand)]
+            busted += [p for p in seats if stacks[p] == 0]
+            if hand_log:
+                hand_log.write(hand, **(log_extra or {}), table=t + 1)
+        rounds += 1
         if busted:
-            alive = sum(1 for s in stacks if s > 0)
-            assign_places(places, busted, alive + 1, lambda i: before[i])
-    remaining = [i for i in range(n) if stacks[i] > 0]
-    assign_places(places, remaining, 1, lambda i: stacks[i])
-    return {"names": names, "places": places, "hands": hand_no, "stacks": stacks}
+            assign_places(places, busted, sum(1 for s in stacks if s > 0) + 1, lambda p: before[p])
+            tables = _rebalance(tables, stacks, table_size, rng)
+    remaining = [p for p in range(n) if stacks[p] > 0]
+    assign_places(places, remaining, 1, lambda p: stacks[p])
+    return {"names": names, "places": places, "stacks": stacks, "hands": hands, "rounds": rounds, "finished": len(remaining) == 1}
+
+
+def play_sng(players: Sequence[BotPlayer], seed: object, *, max_hands: int | None = None, **options) -> dict:
+    """A tournament at a single table, played to the end unless max_hands is given."""
+    return play_tournament(players, seed, table_size=len(players), max_hands=max_hands, **options)
 
 
 def big_blind_of(hand: Hand) -> int:
@@ -323,13 +403,13 @@ def big_blind_of(hand: Hand) -> int:
 
 
 def next_button(stacks: Sequence[int], button: int, last_big_blind: int | None = None) -> int:
-    """Where the button goes for the next hand of a sit-and-go: the next player
+    """Where the button goes for the next hand of a tournament: the next player
     still in, except that heads-up the player who just posted the big blind takes
     the button (and so the small blind), so nobody posts the big blind twice."""
     alive = [i for i, s in enumerate(stacks) if s > 0]
     if len(alive) == 2 and last_big_blind in alive:
         return last_big_blind
-    button = (button + 1) % len(stacks)
+    button = (button % len(stacks) + 1) % len(stacks)
     while stacks[button] == 0:
         button = (button + 1) % len(stacks)
     return button

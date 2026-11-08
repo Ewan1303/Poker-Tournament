@@ -110,6 +110,84 @@ def test_pause_and_step():
     assert snap["seats"][0]["name"] == "Callie" and snap["seats"][1]["name"] == "Callie 2"
 
 
+def test_you_can_show_your_cards_when_nobody_made_you():
+    config = SessionConfig(mode="play", bots=["rock"], speed="instant", pause_after_hand=30)
+    session = TableSession(config, AVAILABLE)
+    session.start()
+    try:
+        snap = session.wait(-1)
+        deadline = time.monotonic() + 60
+        while True:
+            assert time.monotonic() < deadline, "never won a hand without a showdown"
+            if snap["you"]:
+                session.submit_action({"type": "raise", "amount": snap["you"]["max_raise_to"]})  # Rocky folds most hands
+            elif snap["status"] == "hand_over":
+                if snap["can_show"]:
+                    session.show_yours()
+                    break
+                session.control(next_hand=True)
+            snap = session.wait(snap["version"], timeout=2)
+        snap = session.snapshot()
+        assert snap["seats"][0]["showed"] == "chose" and not snap["can_show"]
+        assert any(e["text"].startswith("You showed") for e in snap["log"])
+        with pytest.raises(ValueError):
+            session.show_yours()  # only once
+    finally:
+        session.stop()
+
+
+def test_tournament_mode_stops_at_the_hand_limit():
+    config = SessionConfig(
+        mode="watch", format="sng", bots=["calling_station", "calling_station", "rock"], max_hands=8, speed="instant", pause_after_hand=0
+    )
+    session = TableSession(config, AVAILABLE)
+    session.start()
+    try:
+        snap = until(session, lambda s: s["status"] == "finished")
+    finally:
+        session.stop()
+    assert snap["hand_no"] == 8  # calling stations rarely bust anyone in 8 hands
+    assert all(row["place"] for row in snap["scoreboard"]["rows"])
+    assert any("ranked by chips" in e["text"] for e in snap["log"])
+
+
+def test_watching_shows_everyones_chance_of_winning():
+    config = SessionConfig(mode="watch", bots=["calling_station", "calling_station", "random_bot"], speed="instant", pause_after_hand=0)
+    session = TableSession(config, AVAILABLE)
+    session.control(paused=True)
+    session.start()
+    try:
+        snap = until(session, lambda s: s["status"] == "running" and s["hand_no"] == 1)
+        odds = [seat["odds"] for seat in snap["seats"]]
+        assert all(o is not None for o in odds) and sum(odds) == pytest.approx(1)
+        session.control(show_cards=False)
+        assert all(seat["odds"] is None for seat in session.snapshot()["seats"])  # no peeking without the cards
+    finally:
+        session.stop()
+
+
+def test_side_pots_are_announced_like_a_dealer_would():
+    from poker_tournament.engine import Hand
+
+    session = TableSession(SessionConfig(mode="watch", bots=["calling_station"] * 4), AVAILABLE)
+    deck = "Ac Ad Kc Kd Qc Qd Jc Jd 2c 7d 9h 4s 3c".split()
+    hand = Hand([100, 300, 1000, 1000], button=3, small_blind=5, big_blind=10, deck=deck)
+    for action in [("raise", 300), "call", "all_in", "all_in", ("raise", 200), "call", "check", "check", "check", "check"]:
+        hand.apply(action)
+    assert hand.finished
+    session.hand, session.active = hand, [0, 1, 2, 3]
+    session.result = session._summarize(hand, [0, 1, 2, 3])
+    session._note_shows(hand, [0, 1, 2, 3])
+    session._note_pots()
+    texts = [entry["text"] for entry in session.log]
+    assert [p["label"] for p in session.result["pots"]] == ["Main pot", "Side pot 1", "Side pot 2"]
+    assert "Callie wins the main pot (400) with a pair" in texts
+    assert "Callie 2 wins side pot 1 (600) with a pair" in texts
+    assert "Callie 3 wins side pot 2 (400) with a pair" in texts
+    assert sum(1 for t in texts if t.endswith("showed (a pair)")) == 4  # everyone still in shows at a showdown
+    session.stop()
+
+
 def test_bad_settings_are_rejected():
     with pytest.raises(ValueError):
         TableSession(SessionConfig(mode="play", bots=[]), AVAILABLE)
@@ -134,7 +212,7 @@ def request(base, path, body=None):
 
 def test_web_server(tmp_path):
     entries = discover_entries(["random_bot", "calling_station"])
-    run_tournament(entries, TournamentConfig(name="round-x", hands=5, in_process=True), tmp_path / "round-x", echo=lambda line: None)
+    run_tournament(entries, TournamentConfig(name="round-x", tournaments=4, max_hands=30, in_process=True), tmp_path / "round-x", echo=lambda line: None)
 
     config = SessionConfig(mode="watch", bots=["random_bot", "calling_station"], speed="instant", pause_after_hand=0)
     app = App(AVAILABLE, set(AVAILABLE), config, results_dir=tmp_path)
@@ -163,12 +241,28 @@ def test_web_server(tmp_path):
         status, runs = request(base, "/api/results")
         assert [run["name"] for run in runs["runs"]] == ["round-x"]
         status, run = request(base, "/api/results/round-x")
-        assert run["done"] and len(run["heads_up"]["leaderboard"]) == 2
+        assert run["done"] and len(run["tournament"]["leaderboard"]) == 2
         assert request(base, "/api/results/..%2Fsecret")[0] == 404
     finally:
         server.shutdown()
         server.server_close()
         app.stop()
+
+
+def test_a_second_copy_moves_to_the_next_port():
+    config = SessionConfig(mode="watch", bots=["calling_station", "calling_station"], speed="instant")
+    first_app, second_app = App(AVAILABLE, set(AVAILABLE), config), App(AVAILABLE, set(AVAILABLE), config)
+    first = create_server(first_app, port=0)
+    try:
+        second = create_server(second_app, port=first.server_address[1])
+        try:
+            assert second.server_address[1] != first.server_address[1]  # never two servers on one port
+        finally:
+            second.server_close()
+    finally:
+        first.server_close()
+        first_app.stop()
+        second_app.stop()
 
 
 def test_play_and_watch_commands(monkeypatch, tmp_path):
@@ -196,9 +290,12 @@ def test_results_of_a_run_in_progress(tmp_path):
     from poker_tournament.tournament import summarize_saved
 
     entries = discover_entries(["random_bot", "calling_station", "ml_example"])
-    run_tournament(entries, TournamentConfig(name="live", hands=5, in_process=True), tmp_path / "live", echo=lambda line: None)
+    config = TournamentConfig(name="live", formats=("heads_up", "tournament"), hands=5, tournaments=3, max_hands=20, in_process=True)
+    run_tournament(entries, config, tmp_path / "live", echo=lambda line: None)
     (tmp_path / "live" / "results.json").unlink()  # as if it were still running
     next(iter((tmp_path / "live" / "matches").glob("*.json"))).unlink()
+    next(iter((tmp_path / "live" / "tournaments").glob("*.json"))).unlink()
     summary = summarize_saved(tmp_path / "live")
     assert summary["heads_up"]["progress"] == [2, 3]
+    assert summary["tournament"]["progress"] == [2, 3]
     assert len(summary["heads_up"]["leaderboard"]) == 3

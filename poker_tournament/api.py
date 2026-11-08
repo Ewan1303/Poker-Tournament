@@ -226,14 +226,14 @@ class Observation:
 class MatchInfo:
     """Sent once before a match (heads-up) or a sit-and-go game starts."""
 
-    format: str  # "heads_up" or "sng"
+    format: str  # "tournament" or "heads_up" (or "cash" at a multi-player table in poker play / watch)
     your_name: str
     players: list[str]  # names of everyone in this match or game
     starting_stack: int
     small_blind: int  # opening blinds (in a sit-and-go they go up, see blind_levels)
     big_blind: int
-    num_hands: int | None  # hands in this heads-up match; None for a sit-and-go
-    blind_levels: list[list[int]]  # [[small, big], ...] for a sit-and-go
+    num_hands: int | None  # hands in this heads-up match, or a tournament's hand limit (None: no limit)
+    blind_levels: list[list[int]]  # [[small, big], ...]: a tournament's blinds, rising every hands_per_level hands
     hands_per_level: int | None
     act_timeout: float | None  # seconds you get per decision
     raw: dict = field(default_factory=dict, repr=False)
@@ -263,7 +263,8 @@ class PlayerResult:
     end_stack: int
     net: int  # chips won (positive) or lost (negative) this hand
     folded: bool
-    hole_cards: list[str] | None  # None unless they are yours or were shown at showdown
+    hole_cards: list[str] | None  # None unless they are yours or were shown
+    shown: str | None = None  # "showdown" (had to show), "chose" (showed anyway) or None (kept hidden)
 
 
 @dataclass
@@ -291,6 +292,7 @@ class HandResult:
                 net=p["net"],
                 folded=p["folded"],
                 hole_cards=p["hole_cards"],
+                shown=p.get("shown"),
             )
             for p in d["players"]
         ]
@@ -322,5 +324,12 @@ class PokerBot:
         """Called when it is your turn. Return an Action."""
         raise NotImplementedError("your Bot class needs an act(self, obs) method")
 
+    def show_cards(self, result: HandResult) -> bool:
+        """Called when a hand ends without your cards being shown: you won because
+        everyone folded, or you folded yourself. Return True to show them to the
+        table anyway, say to advertise a bluff. Nobody has to: at a showdown
+        everyone still in shows automatically, and otherwise cards stay hidden."""
+        return False
+
     def on_hand_end(self, result: HandResult) -> None:
-        """Called after every hand, with showdown cards if there was a showdown."""
+        """Called after every hand, with every card that was shown."""

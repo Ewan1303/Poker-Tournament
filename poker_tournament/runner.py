@@ -11,6 +11,8 @@ Protocol (one JSON object per line):
     runner -> engine   {"id": 7, "action": {"type": "raise", "amount": 300}}
     engine -> runner   {"id": 8, "type": "hand_end", "result": {...}}   (also "match_start" with "info")
     runner -> engine   {"id": 8, "ok": true}    or    {"id": 8, "error": "traceback"}
+    engine -> runner   {"id": 9, "type": "show", "result": {...}}   (only if ready said "shows": true)
+    runner -> engine   {"id": 9, "show": false}
     engine -> runner   {"type": "shutdown"}
 """
 
@@ -36,7 +38,7 @@ def main() -> int:
         protocol_out.write(json.dumps(message, separators=(",", ":")) + "\n")
         protocol_out.flush()
 
-    from poker_tournament.api import HandResult, MatchInfo, Observation, normalize_action
+    from poker_tournament.api import HandResult, MatchInfo, Observation, PokerBot, normalize_action
     from poker_tournament.loader import load_bot_class
 
     try:
@@ -44,7 +46,8 @@ def main() -> int:
     except BaseException:
         send({"type": "error", "error": traceback.format_exc()})
         return 1
-    send({"type": "ready"})
+    # Only bots that decide for themselves whether to show their cards get asked.
+    send({"type": "ready", "shows": wants_show_requests(bot, PokerBot)})
 
     for line in protocol_in:
         if not line.strip():
@@ -57,6 +60,8 @@ def main() -> int:
         try:
             if kind == "act":
                 reply["action"] = normalize_action(bot.act(Observation.from_dict(message["obs"])))
+            elif kind == "show":
+                reply["show"] = bool(bot.show_cards(HandResult.from_dict(message["result"])))
             elif kind == "hand_end":
                 bot.on_hand_end(HandResult.from_dict(message["result"]))
                 reply["ok"] = True
@@ -71,6 +76,12 @@ def main() -> int:
             reply = {"id": message.get("id"), "error": text}
         send(reply)
     return 0
+
+
+def wants_show_requests(bot, base) -> bool:
+    """True if the bot has its own show_cards (not just the one it inherits from PokerBot)."""
+    method = getattr(type(bot), "show_cards", None)
+    return callable(method) and method is not getattr(base, "show_cards", None)
 
 
 if __name__ == "__main__":

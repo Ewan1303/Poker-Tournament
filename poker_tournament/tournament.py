@@ -1,14 +1,16 @@
-"""Running a tournament round: every bot plays every other bot.
+"""Running a tournament round.
 
-Main event: a heads-up duplicate round robin. Each pair of bots plays
+Main event: many freezeout tournaments, every bot in each one. Everyone
+starts with the same chips; a tournament ends when one bot has every chip or
+after `max_hands` hands, when the rest are ranked by chips. Bots are ranked
+by tournaments won, then by average finishing place.
+
+Also available: a heads-up duplicate round robin. Each pair of bots plays
 `hands` deals twice (seats swapped), and bots are ranked by big blinds won
 per 100 hands averaged over their opponents.
 
-Optional side event: sit-and-go games at tables of up to `table_size` bots,
-ranked by average points (1 for a win down to 0 for finishing last).
-
-Each pairing or game is saved as it finishes, so an interrupted run can be
-picked up again with resume=True.
+Finished tournaments and pairings are saved as they go, so an interrupted run
+can be picked up again with resume=True.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ import hashlib
 import itertools
 import json
 import math
-import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Callable
 
 from .loader import BotLoadError, extract_zip, find_bot_root, resolve_bot
-from .match import SNG_LEVELS, HandLog, duplicate_result, play_heads_up, play_sng, write_hand_records
+from .match import HandLog, blind_levels, duplicate_result, play_heads_up, play_tournament, write_hand_records
 from .players import BotPlayer, BotStats, LocalBot, ProcessBot, kill_all_bots
 
 
@@ -40,15 +41,16 @@ class Entry:
 @dataclass
 class TournamentConfig:
     name: str
-    formats: tuple[str, ...] = ("heads_up",)  # "heads_up" and/or "sng"
+    formats: tuple[str, ...] = ("tournament",)  # "tournament" and/or "heads_up"
+    tournaments: int = 100  # freezeout tournaments to play
+    max_hands: int | None = 100  # hands per table before a tournament is decided on chips (None: play to the end)
+    table_size: int = 10
+    hands_per_level: int = 20
     hands: int = 1000  # deals per heads-up pairing; each is played from both seats
     seed: int = 0
     stack: int = 10_000
     small_blind: int = 50
     big_blind: int = 100
-    games: int = 50  # sit-and-go games
-    table_size: int = 6
-    hands_per_level: int = 20
     act_timeout: float = 1.0
     startup_timeout: float = 60.0
     max_failures: int = 25
@@ -69,8 +71,15 @@ class TournamentConfig:
         """Settings that must match for a saved pairing to be reused."""
         return {"hands": self.hands, "seed_hash": self.seed_hash(), "stack": self.stack, "blinds": [self.small_blind, self.big_blind]}
 
-    def sng_key(self) -> dict:
-        return {"seed_hash": self.seed_hash(), "stack": self.stack, "table_size": self.table_size, "hands_per_level": self.hands_per_level}
+    def tournament_key(self) -> dict:
+        return {
+            "seed_hash": self.seed_hash(),
+            "stack": self.stack,
+            "blinds": [self.small_blind, self.big_blind],
+            "table_size": self.table_size,
+            "hands_per_level": self.hands_per_level,
+            "max_hands": self.max_hands,
+        }
 
 
 def safe_name(name: str) -> str:
@@ -168,10 +177,10 @@ def run_tournament(
         "config": asdict(config),
         "bots": [{"name": e.name, "path": str(e.path)} for e in entries],
     }
+    if "tournament" in config.formats:
+        summary["tournament"] = _run_tournaments(entries, config, out_dir, resume, echo)
     if "heads_up" in config.formats:
         summary["heads_up"] = _run_heads_up(entries, config, out_dir, resume, echo)
-    if "sng" in config.formats:
-        summary["sng"] = _run_sng(entries, config, out_dir, resume, echo)
     run_file.write_text(json.dumps(dict(asdict(config), seed_hash=config.seed_hash(), bots=bots), indent=2), encoding="utf-8")
     (out_dir / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (out_dir / "leaderboard.md").write_text(leaderboard_markdown(summary), encoding="utf-8")
@@ -192,6 +201,16 @@ def summarize_saved(out_dir: Path) -> dict:
         "config": dict(asdict(config), seed=None),
         "bots": [{"name": name} for name in names],
     }
+    if "tournament" in config.formats:
+        outcomes, stats = {}, {name: BotStats() for name in names}
+        for path in (out_dir / "tournaments").glob("*.json"):
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("key", {}).get("seed_hash") == key_hash and saved.get("bots") == names:
+                outcomes.update({o["number"]: o for o in saved["outcomes"]})
+                for name, s in saved["stats"].items():
+                    stats[name].add(BotStats.from_dict(s))
+        summary["tournament"] = _summarize_tournaments(entries, outcomes, stats, config)
+        summary["tournament"]["progress"] = [len(outcomes), config.tournaments]
     if "heads_up" in config.formats:
         pairings = {}
         for path in (out_dir / "matches").glob("*.json"):
@@ -200,14 +219,6 @@ def summarize_saved(out_dir: Path) -> dict:
                 pairings[(saved["a"], saved["b"])] = saved["halves"]
         summary["heads_up"] = _summarize_heads_up(entries, pairings, config)
         summary["heads_up"]["progress"] = [len(pairings), len(names) * (len(names) - 1) // 2]
-    if "sng" in config.formats:
-        games = {}
-        for path in (out_dir / "sng").glob("game*.json"):
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved.get("key", {}).get("seed_hash") == key_hash:
-                games[path.stem] = saved
-        summary["sng"] = _summarize_sng(entries, games)
-        summary["sng"]["progress"] = [len(games), config.games]
     return summary
 
 
@@ -364,126 +375,219 @@ def _summarize_heads_up(entries, results, config) -> dict:
     return {"leaderboard": table, "head_to_head": head_to_head, "matches": matches}
 
 
-# -- sit-and-go ---------------------------------------------------------------
+# -- tournaments ----------------------------------------------------------------
 
 
-def _run_sng(entries, config, out_dir, resume, echo) -> dict:
-    table_size = max(2, min(config.table_size, len(entries)))
-    rng = random.Random(f"{config.seed}:sng-schedule")
-    played = {e.name: 0 for e in entries}
-    schedule = []
-    for _ in range(config.games):
-        # Bots that have played least go first, so everyone plays about as often.
-        order = sorted(entries, key=lambda e: (played[e.name], rng.random()))
-        table = order[:table_size]
-        rng.shuffle(table)
-        for e in table:
-            played[e.name] += 1
-        schedule.append(table)
-
-    saved_dir = out_dir / "sng"
-    results: dict[int, dict] = {}
+def _run_tournaments(entries, config, out_dir, resume, echo) -> dict:
+    """Play config.tournaments tournaments in batches; each batch reuses one set of
+    bot processes (starting a process per tournament would be slow)."""
+    total = config.tournaments
+    names = [e.name for e in entries]
+    size = max(1, min(20, math.ceil(total / max(1, config.workers * 4))))
+    batches = [(start, min(total, start + size)) for start in range(0, total, size)]
+    outcomes: dict[int, dict] = {}
+    stats = {name: BotStats() for name in names}
     todo = []
-    for game, table in enumerate(schedule, 1):
-        saved = saved_dir / f"game{game:03d}.json"
+    for start, end in batches:
+        saved = out_dir / "tournaments" / f"{start + 1:05d}-{end:05d}.json"
         if resume and saved.exists():
             data = json.loads(saved.read_text(encoding="utf-8"))
-            if data.get("key") == config.sng_key() and data.get("names") == [e.name for e in table]:
-                results[game] = data
+            if data.get("key") == config.tournament_key() and data.get("bots") == names:
+                outcomes.update({o["number"]: o for o in data["outcomes"]})
+                for name, s in data["stats"].items():
+                    stats[name].add(BotStats.from_dict(s))
                 continue
-        todo.append((game, table))
-    echo(f"Sit-and-go: {config.games} games at tables of {table_size} ({len(todo)} to play)")
-    done = []
-
-    def on_result(task, result):
-        game = task[0]
-        results[game] = result
-        done.append(game)
-        winner = result["names"][result["places"].index(min(result["places"]))]
-        echo(f"  [{len(done)}/{len(todo)}] game {game}: {winner} won after {result['hands']} hands")
-
-    _run_tasks(todo, lambda task: _play_sng_game(*task, config, out_dir), config.workers, on_result)
-    return _summarize_sng(entries, results)
-
-
-def _play_sng_game(game: int, table: list[Entry], config: TournamentConfig, out_dir: Path) -> dict:
-    label = f"game{game:03d}"
-    players = [make_player(e, config) for e in table]
-    hand_log = HandLog(out_dir / "hands" / f"sng_{label}.jsonl.gz", config.full_info_logs) if config.hand_logs else None
+        todo.append((start, end))
+    tables = math.ceil(len(entries) / config.table_size)
+    seating = "at one table" if tables == 1 else f"starting at {tables} tables that merge into a final table"
+    limit = f"up to {config.max_hands} hands each" if config.max_hands else "played to the end"
+    remaining = sum(end - start for start, end in todo)
+    echo(f"Tournaments: {total} with all {len(entries)} bots {seating}, {limit} ({remaining} to play)")
     started = time.perf_counter()
+
+    def on_result(task, batch):
+        start, end = task
+        saved = out_dir / "tournaments" / f"{start + 1:05d}-{end:05d}.json"
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text(json.dumps(batch), encoding="utf-8")
+        outcomes.update({o["number"]: o for o in batch["outcomes"]})
+        for name, s in batch["stats"].items():
+            stats[name].add(BotStats.from_dict(s))
+        wins = {name: 0.0 for name in names}
+        for outcome in outcomes.values():
+            for name, share in _win_shares(outcome).items():
+                wins[name] += share
+        leaders = ", ".join(f"{name} {wins[name]:g}" for name in sorted(wins, key=wins.get, reverse=True)[:3])
+        done = len(outcomes)
+        left = (time.perf_counter() - started) / max(1, done - (total - remaining)) * (total - done)
+        echo(f"  [{done}/{total}] most wins so far: {leaders}  (about {left / 60:.0f} min left)")
+
+    _run_tasks(todo, lambda task: _play_tournament_batch(*task, entries, config, out_dir), config.workers, on_result)
+    return _summarize_tournaments(entries, outcomes, stats, config)
+
+
+def _play_tournament_batch(start: int, end: int, entries: list[Entry], config: TournamentConfig, out_dir: Path) -> dict:
+    label = f"tournaments_{start + 1:05d}-{end:05d}"
+    players = [make_player(e, config) for e in entries]
+    hand_log = HandLog(out_dir / "hands" / f"{label}.jsonl.gz", config.full_info_logs) if config.hand_logs else None
+    outcomes = []
+    began = time.perf_counter()
     try:
         for player in players:
             player.start()
-        outcome = play_sng(
-            players,
-            f"{config.seed}:sng:{game}",
-            stack=config.stack,
-            levels=SNG_LEVELS,
-            hands_per_level=config.hands_per_level,
-            act_timeout=None if config.in_process else config.act_timeout,
-            hand_log=hand_log,
-            log_extra={"game": game},
-        )
+        for number in range(start + 1, end + 1):
+            for player in players:
+                player.new_game()
+            outcome = play_tournament(
+                players,
+                f"{config.seed}:tournament:{number}",
+                stack=config.stack,
+                levels=blind_levels(config.big_blind),
+                hands_per_level=config.hands_per_level,
+                table_size=config.table_size,
+                max_hands=config.max_hands,
+                act_timeout=None if config.in_process else config.act_timeout,
+                hand_log=hand_log,
+                log_extra={"tournament": number},
+            )
+            outcomes.append(dict(outcome, number=number))
     finally:
         for player in players:
             player.close()
         if hand_log:
             hand_log.close()
-    _write_outputs(players, out_dir / "logs", f"sng_{label}")
-    result = dict(outcome, key=config.sng_key(), seconds=time.perf_counter() - started)
-    result["stats"] = {p.name: p.stats.to_dict() for p in players}
-    saved = out_dir / "sng" / f"{label}.json"
-    saved.parent.mkdir(parents=True, exist_ok=True)
-    saved.write_text(json.dumps(result), encoding="utf-8")
-    return result
+    _write_outputs(players, out_dir / "logs", label)
+    return {
+        "key": config.tournament_key(),
+        "bots": [e.name for e in entries],
+        "outcomes": outcomes,
+        "seconds": time.perf_counter() - began,
+        "stats": {p.name: p.stats.to_dict() for p in players},
+    }
 
 
-def _summarize_sng(entries, results) -> dict:
-    rows = {e.name: {"bot": e.name, "games": 0, "wins": 0, "points": 0.0, "place_sum": 0.0, "stats": BotStats()} for e in entries}
-    for result in results.values():
-        n = len(result["names"])
-        for name, place in zip(result["names"], result["places"]):
-            row = rows[name]
-            row["games"] += 1
-            row["wins"] += place == 1
-            row["place_sum"] += place
-            row["points"] += (n - place) / (n - 1)
-        for name, s in result["stats"].items():
-            rows[name]["stats"].add(BotStats.from_dict(s))
+def _finish_shares(outcome: dict) -> dict[str, list[float]]:
+    """For each player, the share of each finishing position they took: a shared
+    place is split, so two players tied for 2nd and 3rd get half of each."""
+    places = outcome["places"]
+    n = len(places)
+    shares = {}
+    for name, place in zip(outcome["names"], places):
+        tied = sum(1 for p in places if p == place)
+        first = round(place - (tied - 1) / 2)
+        row = [0.0] * n
+        for position in range(first, first + tied):
+            row[position - 1] = 1 / tied
+        shares[name] = row
+    return shares
+
+
+def _win_shares(outcome: dict) -> dict[str, float]:
+    return {name: row[0] for name, row in _finish_shares(outcome).items() if row[0]}
+
+
+def _summarize_tournaments(entries, outcomes: dict[int, dict], stats: dict[str, BotStats], config) -> dict:
+    names = [e.name for e in entries]
+    n = len(names)
+    rows = {name: {"finishes": [0.0] * n, "place_sum": 0.0, "chips": 0, "count": 0} for name in names}
+    for outcome in outcomes.values():
+        for name, share in _finish_shares(outcome).items():
+            rows[name]["finishes"] = [a + b for a, b in zip(rows[name]["finishes"], share)]
+        for name, place, chips in zip(outcome["names"], outcome["places"], outcome["stacks"]):
+            rows[name]["place_sum"] += place
+            rows[name]["chips"] += chips - config.stack
+            rows[name]["count"] += 1
     table = []
-    for row in rows.values():
-        if not row["games"]:
+    for name in names:
+        row, s = rows[name], stats[name]
+        played = row["count"]
+        if not played:
             continue
-        s = row.pop("stats")
-        games = row["games"]
+        win_rate = row["finishes"][0] / played
         table.append(
             {
-                "bot": row["bot"],
-                "games": games,
-                "wins": row["wins"],
-                "avg_points": row["points"] / games,
-                "avg_place": row["place_sum"] / games,
+                "bot": name,
+                "tournaments": played,
+                "wins": row["finishes"][0],
+                "win_rate": win_rate,
+                "win_rate_range": 1.96 * math.sqrt(win_rate * (1 - win_rate) / played),
+                "avg_place": row["place_sum"] / played,
+                "top3_rate": sum(row["finishes"][:3]) / played,
+                "avg_chips": row["chips"] / played,
+                "finishes": [count / played for count in row["finishes"]],
                 "avg_ms": s.avg_think_ms,
                 "failures": s.failures,
+                "timeouts": s.timeouts,
                 "cut_off": s.cut_off,
                 "errors": s.errors[:2],
             }
         )
-    table.sort(key=lambda row: (row["avg_points"], row["wins"]), reverse=True)
-    return {"leaderboard": table, "games": len(results)}
+    table.sort(key=lambda r: (-r["wins"], r["avg_place"], -r["avg_chips"]))
+    played = list(outcomes.values())
+    return {
+        "leaderboard": table,
+        "tournaments": len(played),
+        "players": n,
+        "avg_hands": sum(o["rounds"] for o in played) / len(played) if played else 0,
+        "finished_share": sum(1 for o in played if o["finished"]) / len(played) if played else 0,
+    }
 
 
 # -- report -------------------------------------------------------------------
+
+
+def _ordinal_word(place: int) -> str:
+    return f"{place}{'th' if 10 <= place % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(place % 10, 'th')}"
 
 
 def leaderboard_markdown(summary: dict) -> str:
     config = summary["config"]
     big = config["big_blind"]
     lines = [f"# {summary['name']}", "", f"Run {summary['created'].replace('T', ' ')} with {len(summary['bots'])} bots.", ""]
+    tournament = summary.get("tournament")
+    if tournament:
+        board = tournament["leaderboard"]
+        players = tournament["players"]
+        tables = math.ceil(players / config["table_size"])
+        seating = "at one table" if tables == 1 else f"starting at {tables} tables that merged into a final table"
+        limit = (
+            f"or after {config['max_hands']} hands, when everyone left is ranked by chips"
+            if config.get("max_hands")
+            else "and every tournament was played to the end"
+        )
+        lines += [
+            "## Tournaments (main event)",
+            "",
+            f"{tournament['tournaments']:,} tournaments with all {players} bots {seating}. Everyone started with "
+            f"{config['stack']:,} chips, blinds {config['small_blind']}/{big} going up every {config['hands_per_level']} hands. "
+            f"A tournament ends when one bot has every chip, {limit}. "
+            f"{100 * tournament['finished_share']:.0f}% were played down to one winner; "
+            f"they lasted {tournament['avg_hands']:.0f} hands on average.",
+            "",
+            "| Rank | Bot | Wins | Win % | Avg finish | Top 3 | Avg chips won | Avg decision | Errors |",
+            "|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for rank, row in enumerate(board, 1):
+            errors = f"{row['failures']}" + (" (cut off)" if row["cut_off"] else "")
+            lines.append(
+                f"| {rank} | {row['bot']} | {row['wins']:g} | {100 * row['win_rate']:.1f}% ±{100 * row['win_rate_range']:.1f} | "
+                f"{row['avg_place']:.2f} | {100 * row['top3_rate']:.0f}% | {row['avg_chips']:+,.0f} | {row['avg_ms']:.1f} ms | {errors} |"
+            )
+        lines += [
+            "",
+            "Ranked by tournaments won, then average finishing place. Shared places split a win between the bots that tied.",
+            "",
+        ]
+        if players <= 10:
+            positions = [_ordinal_word(p) for p in range(1, players + 1)]
+            lines += ["### Finishing positions", "", "| Bot | " + " | ".join(positions) + " |", "|---|" + "---:|" * players]
+            for row in board:
+                lines.append(f"| {row['bot']} | " + " | ".join(f"{100 * share:.0f}%" for share in row["finishes"]) + " |")
+            lines.append("")
     heads_up = summary.get("heads_up")
     if heads_up:
         lines += [
-            "## Heads-up round robin (main event)",
+            "## Heads-up round robin",
             "",
             f"Every pair of bots played {config['hands']:,} deals from both seats ({2 * config['hands']:,} hands), "
             f"starting each hand with {config['stack'] // big} big blinds (blinds {config['small_blind']}/{big}), seed {config['seed']}.",
@@ -517,26 +621,8 @@ def leaderboard_markdown(summary: dict) -> str:
                 cells.append("—" if cell is None else f"{cell['bb_per_100']:+.1f}")
             lines.append(f"| **{name}** | " + " | ".join(cells) + " |")
         lines.append("")
-    sng = summary.get("sng")
-    if sng:
-        lines += [
-            "## Sit-and-go",
-            "",
-            f"{sng['games']} games at tables of up to {config['table_size']}, starting stacks {config['stack']:,}, "
-            f"blinds up every {config['hands_per_level']} hands. Points: 1 for a win down to 0 for last place.",
-            "",
-            "| Rank | Bot | Avg points | Wins | Games | Avg place | Avg decision | Errors |",
-            "|---:|---|---:|---:|---:|---:|---:|---:|",
-        ]
-        for rank, row in enumerate(sng["leaderboard"], 1):
-            errors = f"{row['failures']}" + (" (cut off)" if row["cut_off"] else "")
-            lines.append(
-                f"| {rank} | {row['bot']} | {row['avg_points']:.3f} | {row['wins']} | {row['games']} | "
-                f"{row['avg_place']:.2f} | {row['avg_ms']:.1f} ms | {errors} |"
-            )
-        lines.append("")
     problems = []
-    for section in ("heads_up", "sng"):
+    for section in ("tournament", "heads_up"):
         for row in (summary.get(section) or {}).get("leaderboard", []):
             for error in row["errors"]:
                 problems.append(f"- **{row['bot']}**: {error.strip().splitlines()[-1]}")

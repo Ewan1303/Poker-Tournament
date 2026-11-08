@@ -34,10 +34,10 @@ def test_run_from_a_submissions_folder_with_zips(tmp_path, capsys):
     for name in ("random_bot", "calling_station"):
         with zipfile.ZipFile(submissions / f"{name}.zip", "w") as archive:
             archive.write(BUILTIN_BOTS / name / "bot.py", f"{name}/bot.py")
-    code = main(["run", str(submissions), "--name", "r1", "--hands", "10", "--out", str(tmp_path / "results"), "--in-process"])
+    code = main(["run", str(submissions), "--name", "r1", "--tournaments", "5", "--max-hands", "30", "--out", str(tmp_path / "results"), "--in-process"])
     assert code == 0
     assert (tmp_path / "results" / "r1" / "leaderboard.md").exists()
-    assert "Heads-up round robin" in capsys.readouterr().out
+    assert "Tournaments (5 played)" in capsys.readouterr().out
 
 
 def test_collect_from_git_zip_and_folder(tmp_path):
@@ -75,7 +75,7 @@ def test_collect_from_git_zip_and_folder(tmp_path):
 
 
 def test_resuming_needs_the_seed(tmp_path, capsys):
-    base = ["run", "random_bot", "calling_station", "--name", "r", "--hands", "5", "--out", str(tmp_path), "--in-process"]
+    base = ["run", "random_bot", "calling_station", "--name", "r", "--format", "heads-up", "--hands", "5", "--out", str(tmp_path), "--in-process"]
     assert main(base + ["--seed", "4242"]) == 0
     run_file = tmp_path / "r" / "run.json"
     saved = json.loads(run_file.read_text(encoding="utf-8"))

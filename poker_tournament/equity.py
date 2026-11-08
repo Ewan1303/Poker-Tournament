@@ -1,9 +1,10 @@
-"""Monte Carlo equity: how often a hand wins against random opponent hands."""
+"""Equity: how often a hand wins, against random hands or against known ones."""
 
 from __future__ import annotations
 
+import itertools
 import random
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from .cards import cards_to_ints
 from .evaluator import evaluate
@@ -49,3 +50,35 @@ def estimate_equity(
         elif mine == best:
             total += 1.0 / (ties + 1)
     return total / iterations
+
+
+def showdown_odds(
+    hands: Sequence[Iterable[str | int]],
+    board: Iterable[str | int] = (),
+    samples: int = 2000,
+    rng: random.Random | None = None,
+) -> list[float]:
+    """Each hand's chance (0-1) of winning from here when everyone's cards are
+    known, as on a TV broadcast. Ties count as a share. Exact once the flop is
+    out (every remaining board is tried); before it, `samples` random boards."""
+    holes = [cards_to_ints(hand) for hand in hands]
+    known = cards_to_ints(board)
+    used = {card for hole in holes for card in hole} | set(known)
+    deck = [card for card in range(52) if card not in used]
+    missing = 5 - len(known)
+    if missing <= 2:
+        runouts = itertools.combinations(deck, missing)
+    else:
+        draw = (rng or random).sample
+        runouts = (draw(deck, missing) for _ in range(samples))
+    shares = [0.0] * len(holes)
+    count = 0
+    for extra in runouts:
+        full = known + list(extra)
+        scores = [evaluate(hole + full) for hole in holes]
+        best = max(scores)
+        winners = [i for i, score in enumerate(scores) if score == best]
+        for i in winners:
+            shares[i] += 1 / len(winners)
+        count += 1
+    return [share / count for share in shares]

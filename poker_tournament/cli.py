@@ -115,7 +115,7 @@ def _cmd_run(args) -> int:
     from .tournament import TournamentConfig, discover_entries, run_tournament
 
     entries = discover_entries(args.paths)
-    formats = {"heads-up": ("heads_up",), "sng": ("sng",), "both": ("heads_up", "sng")}[args.format]
+    formats = {"tournament": ("tournament",), "heads-up": ("heads_up",), "all": ("tournament", "heads_up")}[args.format]
     name = args.name or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     out_dir = Path(args.out) / name
     seed = args.seed
@@ -141,7 +141,8 @@ def _cmd_run(args) -> int:
         stack=args.stack,
         small_blind=args.blinds[0],
         big_blind=args.blinds[1],
-        games=args.games,
+        tournaments=args.tournaments,
+        max_hands=args.max_hands or None,
         table_size=args.table_size,
         hands_per_level=args.hands_per_level,
         act_timeout=args.timeout,
@@ -158,6 +159,15 @@ def _cmd_run(args) -> int:
     print(f"Results go to {out_dir}")
     summary = run_tournament(entries, config, out_dir, resume=args.resume)
     print()
+    if "tournament" in summary:
+        print(f"Tournaments ({summary['tournament']['tournaments']:,} played)")
+        print(f"  {'#':>2}  {'bot':<24} {'wins':>7} {'win %':>7} {'avg finish':>10} {'avg chips':>10} {'errors':>6}")
+        for rank, row in enumerate(summary["tournament"]["leaderboard"], 1):
+            print(
+                f"  {rank:>2}  {row['bot']:<24} {row['wins']:>7g} {100 * row['win_rate']:>6.1f}% "
+                f"{row['avg_place']:>10.2f} {row['avg_chips']:>+10,.0f} {row['failures']:>6}"
+            )
+        print()
     if "heads_up" in summary:
         print("Heads-up round robin")
         print(f"  {'#':>2}  {'bot':<24} {'bb/100':>8} {'95% range':>10} {'won':>7} {'avg ms':>7} {'errors':>6}")
@@ -166,12 +176,6 @@ def _cmd_run(args) -> int:
                 f"  {rank:>2}  {row['bot']:<24} {row['bb_per_100']:>+8.1f} {'+/-' + format(1.96 * row['stderr'], '.1f'):>10} "
                 f"{str(row['won']) + '/' + str(row['opponents']):>7} {row['avg_ms']:>7.1f} {row['failures']:>6}"
             )
-        print()
-    if "sng" in summary:
-        print("Sit-and-go")
-        print(f"  {'#':>2}  {'bot':<24} {'points':>7} {'wins':>5} {'games':>6} {'avg place':>9}")
-        for rank, row in enumerate(summary["sng"]["leaderboard"], 1):
-            print(f"  {rank:>2}  {row['bot']:<24} {row['avg_points']:>7.3f} {row['wins']:>5} {row['games']:>6} {row['avg_place']:>9.2f}")
         print()
     print(f"Leaderboard: {out_dir / 'leaderboard.md'}")
     return 0
@@ -315,14 +319,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="run a tournament between many bots")
     p.add_argument("paths", nargs="+", help="a folder of submissions and/or bot folders, zips or built-in bot names")
     p.add_argument("--name", help="name for this run, e.g. round-1 (default: date and time)")
-    p.add_argument("--format", choices=["heads-up", "sng", "both"], default="heads-up", help="default heads-up")
-    p.add_argument("--hands", type=int, default=1000, help="deals per heads-up pairing, each played from both seats (default 1000)")
-    p.add_argument("--games", type=int, default=50, help="sit-and-go games (default 50)")
-    p.add_argument("--table-size", type=int, default=6, help="players per sit-and-go table (default 6)")
-    p.add_argument("--hands-per-level", type=int, default=20, help="sit-and-go hands between blind increases (default 20)")
+    p.add_argument(
+        "--format",
+        choices=["tournament", "heads-up", "all"],
+        default="tournament",
+        help="tournament: freezeouts ranked by wins (default); heads-up: duplicate round robin; all: both",
+    )
+    p.add_argument("--tournaments", type=int, default=100, help="tournaments to play (default 100)")
+    p.add_argument("--max-hands", type=int, default=100, help="hands per table before a tournament is decided on chips; 0 plays to the end (default 100)")
+    p.add_argument("--table-size", type=int, default=10, help="most players at one table (default 10)")
+    p.add_argument("--hands-per-level", type=int, default=20, help="tournament hands between blind increases (default 20)")
+    p.add_argument("--hands", type=int, default=1000, help="heads-up: deals per pairing, each played from both seats (default 1000)")
     p.add_argument("--seed", type=int, help="card seed (default: a new random one, which keeps the deals secret)")
     p.add_argument("--stack", type=int, default=10_000, help="starting chips (default 10000)")
-    p.add_argument("--blinds", type=_blinds, default=(50, 100), help="heads-up blinds SMALL/BIG (default 50/100)")
+    p.add_argument("--blinds", type=_blinds, default=(50, 100), help="starting blinds SMALL/BIG (default 50/100)")
     p.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2), help="matches to play at once")
     p.add_argument("--out", default="results", help="folder for results (default results/)")
     p.add_argument("--resume", action="store_true", help="reuse matches already saved for this run name")

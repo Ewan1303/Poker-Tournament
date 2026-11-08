@@ -102,6 +102,19 @@ def test_names_and_parsing():
         card_to_int("Xx")
 
 
+def test_showdown_odds_with_known_hands():
+    from poker_tournament import showdown_odds
+
+    # Aces against kings before the flop: about 82% to 18%.
+    aces, kings = showdown_odds([["As", "Ah"], ["Kd", "Kc"]], samples=4000, rng=random.Random(5))
+    assert aces == pytest.approx(0.82, abs=0.03) and aces + kings == pytest.approx(1)
+    # On the turn it's exact: kings need one of the two kings left in 44 cards.
+    aces, kings = showdown_odds([["As", "Ah"], ["Kd", "Kc"]], ["2c", "7d", "9h", "3s"])
+    assert kings == pytest.approx(2 / 44)
+    # The river decides it; a shared hand splits.
+    assert showdown_odds([["As", "Kd"], ["Ah", "Kc"]], ["2c", "7d", "9h", "3s", "4s"]) == [0.5, 0.5]
+
+
 def test_equity_estimates_are_sensible():
     rng = random.Random(4)
     assert estimate_equity(["As", "Ah"], iterations=3000, rng=rng) == pytest.approx(0.85, abs=0.03)

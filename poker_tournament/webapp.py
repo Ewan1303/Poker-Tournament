@@ -12,6 +12,8 @@ TableSession from arena.py.
 from __future__ import annotations
 
 import json
+import os
+import socket
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -141,6 +143,9 @@ class _Handler(BaseHTTPRequestHandler):
             if url.path == "/api/action":
                 session.submit_action(body)
                 return self._json({"ok": True})
+            if url.path == "/api/show":
+                session.show_yours()
+                return self._json({"ok": True})
             if url.path == "/api/control":
                 allowed = {"paused", "speed", "step", "next_hand", "show_cards"}
                 session.control(**{k: v for k, v in body.items() if k in allowed})
@@ -176,15 +181,26 @@ class _Handler(BaseHTTPRequestHandler):
             pass  # the page was closed or reloaded
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    if os.name == "nt":
+        # On Windows the usual SO_REUSEADDR lets a second program bind a port that's
+        # already in use, so two copies of the app would silently share one. Insist on
+        # the port to ourselves instead, so a busy port is noticed and skipped.
+        allow_reuse_address = False
+
+        def server_bind(self) -> None:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
+
+
 def create_server(app: App, port: int = 8790, host: str = "127.0.0.1") -> ThreadingHTTPServer:
     """Bind to `port`, or the next free one (port 0 picks any free port)."""
     handler = type("Handler", (_Handler,), {"app": app})
     last_error = None
     for candidate in [port] if port == 0 else range(port, port + 20):
         try:
-            server = ThreadingHTTPServer((host, candidate), handler)
-            server.daemon_threads = True
-            return server
+            return _Server((host, candidate), handler)
         except OSError as exc:
             last_error = exc
     raise OSError(f"no free port from {port} to {port + 19}: {last_error}")

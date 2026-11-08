@@ -91,6 +91,7 @@ class Hand:
         self.showdown = False
         self.winnings: list[int] | None = None  # net chips per seat once the hand is over
         self.pots: list[dict] = []
+        self.chose_to_show: list[int] = []  # seats that showed cards they didn't have to
         self._post_blinds()
 
     # -- state queries -------------------------------------------------------
@@ -153,14 +154,55 @@ class Hand:
             "history": [dict(event) for event in self.history],
         }
 
+    def pot_breakdown(self) -> list[dict]:
+        """The pot as it stands, split into the main pot and side pots.
+
+        A side pot starts above each player who is all in for less than the
+        others; the last pot is the one still being bet into. Each entry is
+        {"amount", "eligible"} where eligible lists the seats that can win it.
+        """
+        contributions = [s.contributed for s in self.seats]
+        caps = sorted({s.contributed for s in self.seats if s.all_in and not s.folded})
+        top = max(contributions)
+        pots = []
+        previous = 0
+        for cap in caps + [top]:
+            if cap <= previous:
+                continue
+            amount = sum(min(c, cap) - min(c, previous) for c in contributions)
+            # Players still betting can win the pot being bet into even before they've matched it.
+            eligible = [
+                i
+                for i, s in enumerate(self.seats)
+                if not s.folded and (s.contributed > previous or (cap == top and not s.all_in))
+            ]
+            if amount:
+                pots.append({"amount": amount, "eligible": eligible})
+            previous = cap
+        return pots
+
+    def shown(self, seat: int) -> str | None:
+        """'showdown' if the seat had to show its cards, 'chose' if it showed them anyway, else None."""
+        if self.showdown and not self.seats[seat].folded:
+            return "showdown"
+        return "chose" if seat in self.chose_to_show else None
+
+    def show(self, seat: int) -> None:
+        """Once the hand is over, a player may show cards nobody made them show
+        (say, to show off a bluff). At a showdown everyone still in shows anyway."""
+        if not self.finished:
+            raise RuntimeError("cards can only be shown once the hand is over")
+        if self.shown(seat) is None:
+            self.chose_to_show.append(seat)
+
     def result(self, reveal_all: bool = True, seat: int | None = None) -> dict:
         """The finished hand. With reveal_all=False, hole cards are hidden unless
-        they belong to `seat` or were shown at showdown."""
+        they belong to `seat`, were shown at showdown, or their owner chose to show them."""
         if not self.finished:
             raise RuntimeError("the hand is not over yet")
         players = []
         for i, s in enumerate(self.seats):
-            shown = reveal_all or i == seat or (self.showdown and not s.folded)
+            shown = self.shown(i)
             players.append(
                 {
                     "seat": i,
@@ -169,7 +211,8 @@ class Hand:
                     "end_stack": s.stack,
                     "net": self.winnings[i],
                     "folded": s.folded,
-                    "hole_cards": cards_to_strs(s.hole) if shown else None,
+                    "shown": shown,
+                    "hole_cards": cards_to_strs(s.hole) if reveal_all or i == seat or shown else None,
                 }
             )
         result = {
@@ -361,13 +404,15 @@ class Hand:
         for level in sorted({c for c in contributions if c > 0}):
             amount = sum(min(c, level) - min(c, previous) for c in contributions)
             eligible = [i for i in order if i in scores and contributions[i] >= level]
+            # A slice only one player put chips into is a bet nobody called: it goes back.
+            uncalled = sum(1 for c in contributions if c >= level) == 1
             if not eligible:  # nobody still in the hand put this much in, so it goes back
                 for i, c in enumerate(contributions):
                     payouts[i] += min(c, level) - min(c, previous)
-            if pots and pots[-1]["eligible"] == eligible:
+            if pots and pots[-1]["eligible"] == eligible and pots[-1]["uncalled"] == uncalled:
                 pots[-1]["amount"] += amount
             else:
-                pots.append({"amount": amount, "eligible": eligible, "winners": []})
+                pots.append({"amount": amount, "eligible": eligible, "winners": [], "uncalled": uncalled})
             previous = level
         for pot in pots:
             if pot["eligible"]:

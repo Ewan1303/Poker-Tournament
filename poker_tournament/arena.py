@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import itertools
 import queue
+import random
 import secrets
 import threading
 import time
@@ -29,9 +30,10 @@ from pathlib import Path
 from .api import normalize_action
 from .cards import cards_to_strs
 from .engine import STREETS, Hand
+from .equity import showdown_odds
 from .evaluator import evaluate, hand_name
 from .loader import bot_info
-from .match import SNG_LEVELS, HandLog, assign_places, big_blind_of, deal_deck, next_button, play_hand
+from .match import HandLog, assign_places, big_blind_of, blind_levels, deal_deck, next_button, play_hand
 from .players import BotPlayer, LocalBot
 
 SPEEDS = {"slow": 1.6, "normal": 0.8, "fast": 0.3, "turbo": 0.05, "instant": 0.0}  # seconds per bot decision
@@ -50,6 +52,7 @@ class SessionConfig:
     small_blind: int = 50
     big_blind: int = 100
     hands_per_level: int = 10  # sit-and-go: how often the blinds go up
+    max_hands: int = 100  # sit-and-go: after this many hands it's decided on chips (0 plays to the end)
     speed: str = "normal"
     pause_after_hand: float | None = None  # seconds to show each result (None: depends on mode and speed)
 
@@ -59,9 +62,9 @@ class SessionConfig:
         known = {f.name for f in fields(cls)}
         values = {k: v for k, v in data.items() if k in known}
         try:
-            for key in ("stack", "small_blind", "big_blind", "hands_per_level"):
+            for key in ("stack", "small_blind", "big_blind", "hands_per_level", "max_hands"):
                 if key in values:
-                    values[key] = int(values[key])
+                    values[key] = int(values[key] or 0)
             for key in ("bots", "compare"):
                 if key in values:
                     values[key] = [str(v) for v in values[key]]
@@ -92,6 +95,8 @@ class SessionConfig:
             raise ValueError("need 0 < small blind <= big blind <= starting chips")
         if self.hands_per_level < 1:
             raise ValueError("blinds must go up after at least one hand")
+        if self.max_hands < 0:
+            raise ValueError("the hand limit can't be negative (0 means no limit)")
         if self.speed not in SPEEDS:
             raise ValueError(f"speed must be one of {', '.join(SPEEDS)}")
         if not self.player_name.strip() or len(self.player_name) > 24:
@@ -194,6 +199,10 @@ class TableSession:
         self.seed = secrets.randbelow(2**63)
         self.shadows: list[_Shadow] = []
         self.last_comparison: dict | None = None  # the latest hand's replay results
+        self._hand_closed = True  # the bots have been told how the current hand ended
+        self._odds_cache: tuple | None = None
+        self._odds_rng = random.Random()
+        self._odds_lock = threading.Lock()
         self._hand_log = HandLog(hand_log, full_info=True) if hand_log else None
         self._thread = threading.Thread(target=self._run, name="poker-table", daemon=True)
 
@@ -220,6 +229,27 @@ class TableSession:
             self._human_actions.put(normalized)
             self._publish()
 
+    def show_yours(self) -> None:
+        """Show your cards when nobody made you (after winning uncalled, or folding).
+        Raises ValueError if there's nothing to show right now."""
+        with self._cond:
+            if not self._can_show():
+                raise ValueError("there are no cards of yours to show right now")
+            k = self.active.index(self.your_seat)
+            self.hand.show(k)
+            self._note(f"{self.names[self.your_seat]} showed", "show", cards_to_strs(self.hand.seats[k].hole))
+            self._publish()
+
+    def _can_show(self) -> bool:
+        hand = self.hand
+        return bool(
+            hand is not None
+            and hand.finished
+            and not self._hand_closed
+            and self.your_seat in self.active
+            and hand.shown(self.active.index(self.your_seat)) is None
+        )
+
     def control(self, paused=None, speed=None, step=False, next_hand=False, show_cards=None) -> None:
         with self._cond:
             if paused is not None:
@@ -244,7 +274,31 @@ class TableSession:
 
     # -- what the browser sees ---------------------------------------------
 
+    def _odds(self) -> dict[int, float]:
+        """Watching with every card face up: each live player's chance of winning.
+        Worked out outside the lock (it can take a moment) and cached per street."""
+        with self._cond:
+            hand = self.hand
+            if self.config.mode != "watch" or not self.show_cards or hand is None or hand.finished:
+                return {}
+            if self.delay < 0.25 and not self.paused:
+                return {}  # too fast to read, and working them out would slow the game down
+            live = [(self.active[k], list(s.hole)) for k, s in enumerate(hand.seats) if not s.folded]
+            key = (self.id, hand.hand_id, tuple(hand.board), tuple(seat for seat, _ in live))
+            board = list(hand.board)
+        if len(live) < 2:
+            return {}
+        with self._odds_lock:  # several requests at once share one calculation
+            cached = self._odds_cache
+            if cached and cached[0] == key:
+                return cached[1]
+            chances = showdown_odds([hole for _, hole in live], board, samples=1000, rng=self._odds_rng)
+            odds = {seat: chance for (seat, _), chance in zip(live, chances)}
+            self._odds_cache = (key, odds)
+            return odds
+
     def snapshot(self) -> dict:
+        odds = self._odds()
         with self._cond:
             cfg = self.config
             hand = self.hand
@@ -276,10 +330,13 @@ class TableSession:
                     "errors": player.stats.failures if player else 0,
                     "collected": collected.get(seat, 0),
                     "hand_name": shown.get(seat, {}).get("hand_name"),
+                    "showed": None,  # "showdown" or "chose" once their cards were shown to the table
+                    "odds": odds.get(seat),  # chance of winning, when watching with cards face up
                 }
                 if hand is not None and seat in self.active:
                     k = self.active.index(seat)
                     s = hand.seats[k]
+                    showed = hand.shown(k) if hand.finished else None
                     row.update(
                         stack=s.stack,
                         bet=s.bet,
@@ -288,9 +345,11 @@ class TableSession:
                         all_in=s.all_in,
                         turn=not hand.finished and hand.to_act == k,
                         button=hand.button == k,
+                        showed=showed,
                     )
-                    visible = reveal_all or seat == self.your_seat or seat in shown
-                    if visible:
+                    # In play mode you see only what a player at the table would: your own
+                    # cards, and others' when they're shown. Watching, you can see them all.
+                    if reveal_all or seat == self.your_seat or showed:
                         row["cards"] = cards_to_strs(s.hole)
                     elif not s.folded:
                         row["cards"] = ["back", "back"]
@@ -312,10 +371,13 @@ class TableSession:
                 "street": STREETS[hand.street] if hand else None,
                 "board": cards_to_strs(hand.board) if hand else [],
                 "pot": hand.pot if hand else 0,
+                "pots": self._pots(),
                 "blinds": list(self.blinds),
+                "hand_limit": cfg.max_hands if cfg.format == "sng" else 0,
                 "seats": seats,
                 "your_seat": self.your_seat,
                 "you": you,
+                "can_show": self._can_show(),
                 "result": self.result,
                 "scoreboard": self._scoreboard(),
                 "comparison": self._comparison(),
@@ -324,6 +386,18 @@ class TableSession:
                 "speed": self.speed,
                 "show_cards": self.show_cards,
             }
+
+    def _pots(self) -> list[dict]:
+        """The main pot and any side pots, for the table: [{"label", "amount"}]."""
+        hand = self.hand
+        if hand is None:
+            return []
+        if hand.finished and self.result:
+            return [{"label": p["label"], "amount": p["amount"]} for p in self.result["pots"] if p["label"] != "returned"]
+        pots = hand.pot_breakdown()
+        if len(pots) <= 1:
+            return [{"label": "Pot", "amount": hand.pot}]
+        return [{"label": "Main pot" if i == 0 else f"Side pot {i}", "amount": p["amount"]} for i, p in enumerate(pots)]
 
     def _scoreboard(self) -> dict:
         big = self.config.big_blind
@@ -391,16 +465,16 @@ class TableSession:
     def _levels(self) -> list[tuple[int, int]]:
         if self.config.format == "cash":
             return [(self.config.small_blind, self.config.big_blind)]
-        factor = self.config.big_blind / 100
-        return [(max(1, round(s * factor)), max(1, round(b * factor))) for s, b in SNG_LEVELS]
+        return blind_levels(self.config.big_blind)
 
     def _match_info(self) -> dict:
         levels = self._levels()
         heads_up = len(self.names) == 2
+        sng = self.config.format == "sng"
         return {
-            "format": "sng" if self.config.format == "sng" else ("heads_up" if heads_up else "cash"),
+            "format": "tournament" if sng else ("heads_up" if heads_up else "cash"),
             "players": list(self.names),
-            "num_hands": None,
+            "num_hands": (self.config.max_hands or None) if sng else None,
             "starting_stack": self.config.stack,
             "small_blind": levels[0][0],
             "big_blind": levels[0][1],
@@ -423,14 +497,16 @@ class TableSession:
     def _run(self) -> None:
         try:
             self._load()
+            limit = self.config.max_hands
             while not self._stop.is_set():
                 alive = [i for i, s in enumerate(self.stacks) if s > 0]
-                if self.config.format == "sng" and len(alive) < 2:
+                if self.config.format == "sng" and (len(alive) < 2 or (limit and self.hand_no >= limit)):
                     self._finish_sng(alive)
                     return
                 self._play_hand()
                 if not self._stop.is_set():
                     self._between_hands()
+                    self._close_hand()
         except Exception:
             with self._cond:
                 self.status = "error"
@@ -516,9 +592,12 @@ class TableSession:
                     self._note_board(dealt)
                 self._publish()
 
+        # Like real poker: at a showdown everyone still in shows; anyone else may choose to.
         for k, seat in enumerate(active):
-            if self.players[seat]:
-                self.players[seat].hand_end(hand.result_for(k))
+            player = self.players[seat]
+            if player is not None and hand.shown(k) is None and player.wants_to_show(hand.result_for(k)):
+                with self._cond:
+                    hand.show(k)
         with self._cond:
             for k, seat in enumerate(active):
                 self.stacks[seat] = hand.seats[k].stack
@@ -527,19 +606,65 @@ class TableSession:
             self._big_blind_seat = active[big_blind_of(hand)]
             self.hands_played += 1
             self.result = self._summarize(hand, active)
-            for winner in self.result["winners"]:
-                with_hand = f" with {_PHRASES[winner['hand_name']]}" if winner["hand_name"] else ""
-                verb = "win" if winner["name"].lower() == "you" else "wins"
-                self._note(f"{winner['name']} {verb} {winner['amount']:,}{with_hand}", "win")
+            self._note_shows(hand, active)
+            self._note_pots()
             if cfg.format == "sng":
                 self._place_busted(active, starting)
+            self._hand_closed = False  # you can still choose to show until the next hand
             self.status = "hand_over"
             self._publish()
-        if self._hand_log:
-            self._hand_log.write(hand)
         if self.shadows:
             self._compare(hand, active, small, big, deck)
         self.hand_no += 1
+
+    def _close_hand(self) -> None:
+        """Tell the bots how the hand ended (including whether you showed)."""
+        hand = self.hand
+        if hand is None or not hand.finished or self._hand_closed:
+            return
+        with self._cond:
+            self._hand_closed = True
+            self._publish()
+        for k, seat in enumerate(self.active):
+            if self.players[seat]:
+                self.players[seat].hand_end(hand.result_for(k))
+        if self._hand_log:
+            self._hand_log.write(hand)
+
+    def _note_shows(self, hand: Hand, active: list[int]) -> None:
+        order = [(hand.button + j) % hand.n for j in range(1, hand.n + 1)]
+        for k in order:
+            how = hand.shown(k)
+            if how:
+                cards = cards_to_strs(hand.seats[k].hole)
+                detail = f" ({_PHRASES[hand_name(evaluate(hand.seats[k].hole + hand.board))]})" if how == "showdown" else " (didn't have to)"
+                self._note(f"{self.names[active[k]]} showed{detail}", "show", cards)
+
+    def _note_pots(self) -> None:
+        """Who won what: the pot, or the main pot and each side pot."""
+        result = self.result
+        pots = [p for p in result["pots"] if p["label"] != "returned"]
+        for pot in result["pots"]:
+            names = [self.names[seat] for seat in pot["winners"]]
+            if not names:
+                continue
+            who = " and ".join(names)
+            if pot["label"] == "returned":
+                self._note(f"{pot['amount']:,} nobody called goes back to {who}", "returned")
+                continue
+            hand_names = {result["shown"].get(seat, {}).get("hand_name") for seat in pot["winners"]} - {None}
+            with_hand = f" with {_PHRASES[hand_names.pop()]}" if len(hand_names) == 1 else ""
+            if len(pots) == 1:
+                what = f"{pot['amount']:,}"
+            elif pot["label"] == "Main pot":
+                what = f"the main pot ({pot['amount']:,})"
+            else:
+                what = f"{pot['label'].lower()} ({pot['amount']:,})"
+            if len(names) > 1:
+                self._note(f"{who} split {what}{with_hand}", "win")
+            else:
+                verb = "win" if names[0].lower() == "you" else "wins"
+                self._note(f"{who} {verb} {what}{with_hand}", "win")
 
     def _compare(self, hand: Hand, active: list[int], small: int, big: int, deck: list[int]) -> None:
         stacks = [self.config.stack] * len(active)
@@ -574,11 +699,22 @@ class TableSession:
                 winners.append(
                     {"seat": seat, "name": self.names[seat], "amount": collected, "hand_name": shown.get(seat, {}).get("hand_name")}
                 )
+        pots, side = [], 0
+        for pot in hand.pots:
+            if pot["uncalled"]:
+                label = "returned"
+            elif not any(p["label"] == "Main pot" for p in pots):
+                label = "Main pot"
+            else:
+                side += 1
+                label = f"Side pot {side}"
+            pots.append({"label": label, "amount": pot["amount"], "winners": [active[w] for w in pot["winners"]]})
         return {
             "hand": hand.hand_id,
             "showdown": hand.showdown,
             "winners": winners,
             "shown": shown,
+            "pots": pots,
             "nets": {active[k]: hand.winnings[k] for k in range(len(active))},
             "comparison": None,
         }
@@ -596,8 +732,11 @@ class TableSession:
     def _finish_sng(self, alive: list[int]) -> None:
         with self._cond:
             assign_places(self.places, alive, 1, lambda seat: self.stacks[seat])
-            if alive:
-                winner = "You won" if alive[0] == self.your_seat else f"{self.names[alive[0]]} wins"
+            if len(alive) > 1:
+                self._note(f"That's {self.hand_no} hands: the rest are ranked by chips", "hand")
+            winners = [seat for seat in alive if self.places[seat] == 1]
+            if len(winners) == 1:
+                winner = "You won" if winners[0] == self.your_seat else f"{self.names[winners[0]]} wins"
                 self._note(f"{winner} the sit-and-go!", "win")
             self.status = "finished"
             self._publish()

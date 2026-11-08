@@ -26,6 +26,7 @@ from pathlib import Path
 
 from .api import HandResult, MatchInfo, Observation, PokerBot, normalize_action
 from .loader import FRAMEWORK_ROOT, load_bot_class
+from .runner import wants_show_requests
 
 _EOF = object()
 _live_processes: set[subprocess.Popen] = set()
@@ -93,14 +94,31 @@ class BotPlayer:
         self.max_failures = max_failures
         self.stats = BotStats()
         self.dead = False
+        self.loaded = False  # started successfully at least once
+        self._game_failures = 0
 
     def start(self) -> None: ...
+
+    def new_game(self) -> None:
+        """Called before each game when one player plays several in a row (a run of
+        tournaments). The failure count starts again, and a bot that was cut off
+        in the last game gets another chance."""
+        self._game_failures = 0
+        if self.dead and self.loaded:
+            self.restart()
+
+    def restart(self) -> None:
+        self.dead = False
 
     def match_start(self, info: dict) -> None: ...
 
     def act(self, obs: dict) -> dict | None:
         """The bot's action, or None if it failed (the caller then checks or folds)."""
         raise NotImplementedError
+
+    def wants_to_show(self, result: dict) -> bool:
+        """Whether the bot shows cards it doesn't have to, once a hand is over."""
+        return False
 
     def hand_end(self, result: dict) -> None: ...
 
@@ -115,9 +133,10 @@ class BotPlayer:
 
     def _fail(self, message: str) -> None:
         self.stats.failures += 1
+        self._game_failures += 1
         self._note(message)
-        if self.stats.failures >= self.max_failures and not self.dead:
-            self._cut_off(f"cut off after {self.stats.failures} errors/timeouts")
+        if self._game_failures >= self.max_failures and not self.dead:
+            self._cut_off(f"cut off after {self._game_failures} errors/timeouts")
 
     def _note(self, message: str) -> None:
         message = message.strip()[-3000:]
@@ -160,6 +179,7 @@ class ProcessBot(BotPlayer):
         self._output_chars = 0
         self._output_dropped = False
         self._drain: threading.Thread | None = None
+        self.shows = False  # whether the bot has its own show_cards
 
     @property
     def output(self) -> str:
@@ -208,11 +228,28 @@ class ProcessBot(BotPlayer):
             self._cut_off("the bot process exited while starting (see its log)")
         elif message.get("type") == "error":
             self._cut_off("bot.py failed to load:\n" + message.get("error", ""))
+        else:
+            self.loaded = True
+            self.shows = bool(message.get("shows"))
         if self.dead:
             self._kill()
 
+    def restart(self) -> None:
+        """A fresh process (after the bot was cut off)."""
+        self.close()
+        self.dead = False
+        self._inbox = queue.Queue()
+        self._awaiting = None
+        self.start()
+
     def match_start(self, info: dict) -> None:
         self._request("match_start", "info", info, self.startup_timeout)
+
+    def wants_to_show(self, result: dict) -> bool:
+        if not self.shows or self.dead:
+            return False
+        reply = self._request("show", "result", result, self.act_timeout)
+        return bool(reply and reply.get("show"))
 
     def act(self, obs: dict) -> dict | None:
         if self.dead:
@@ -365,10 +402,12 @@ class LocalBot(BotPlayer):
 
     def start(self) -> None:
         if self.bot is not None:
+            self.loaded = True
             return
         started = time.perf_counter()
         try:
             self.bot = load_bot_class(self.path)()
+            self.loaded = True
         except Exception:
             self._cut_off("bot.py failed to load:\n" + traceback.format_exc())
         self.stats.startup_time = time.perf_counter() - started
@@ -379,6 +418,15 @@ class LocalBot(BotPlayer):
                 self.bot.on_match_start(MatchInfo.from_dict(info))
             except Exception:
                 self._fail(traceback.format_exc())
+
+    def wants_to_show(self, result: dict) -> bool:
+        if self.dead or not wants_show_requests(self.bot, PokerBot):
+            return False
+        try:
+            return bool(self.bot.show_cards(HandResult.from_dict(result)))
+        except Exception:
+            self._fail(traceback.format_exc())
+            return False
 
     def act(self, obs: dict) -> dict | None:
         if self.dead:
