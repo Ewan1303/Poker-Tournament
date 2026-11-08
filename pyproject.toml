@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poker-tournament"
+version = "1.0.0"
+description = "No-limit hold'em engine and tournament runner for a bot-building competition"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+ml = ["numpy>=1.26"]
+dev = ["pytest>=8", "numpy>=1.26"]
+
+[project.scripts]
+poker = "poker_tournament.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["poker_tournament*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

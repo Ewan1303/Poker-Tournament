@@ -1,0 +1,10 @@
+# Packages bots may use in the tournament. Install them to develop:
+#     pip install -r requirements-bots.txt
+# Need something else? Ask the organizer before the deadline.
+# For PyTorch on a machine without a GPU, the CPU build is smaller:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+numpy>=2.0
+scipy>=1.13
+scikit-learn>=1.5
+pandas>=2.2
+torch>=2.4

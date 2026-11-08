@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Your own bots and data (keep them in your own private repo)
+my_bots/
+data/
+*.zip
+
+# Submissions stay on the organizer's machine
+submissions/*
+!submissions/README.md
+
+# Published results keep the leaderboard; hand logs and bot logs go in a release instead
+results/*/hands/
+results/*/logs/
+results/*/matches/
+results/*/sng/
+.unzipped/
