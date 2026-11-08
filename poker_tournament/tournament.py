@@ -75,15 +75,30 @@ def discover_entries(paths: list[str | Path]) -> list[Entry]:
     for spec in paths:
         path = Path(spec)
         if path.is_dir() and not (path / "bot.py").exists():
+            # A folder of submissions. `poker collect` records where each bot is in manifest.json.
+            collected = {}
+            if (path / "manifest.json").exists():
+                manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+                collected = {name: e["bot_dir"] for name, e in manifest.get("entries", {}).items() if e.get("bot_dir")}
             children = [c for c in sorted(path.iterdir()) if not c.name.startswith((".", "_"))]
-            found = False
+            problems = []
+            found = 0
             for child in children:
-                if child.is_dir() and find_bot_root(child):
-                    entries.append(Entry(safe_name(child.name), find_bot_root(child).resolve()))
-                    found = True
+                if child.is_dir():
+                    root = Path(collected[child.name]) if child.name in collected else find_bot_root(child)
+                    if root is None or not (root / "bot.py").is_file():
+                        problems.append(child.name)
+                        continue
+                    entries.append(Entry(safe_name(child.name), root.resolve()))
+                    found += 1
                 elif child.suffix.lower() == ".zip":
                     entries.append(Entry(safe_name(child.stem), extract_zip(child, path / ".unzipped" / child.stem).resolve()))
-                    found = True
+                    found += 1
+            if problems:
+                raise BotLoadError(
+                    f"can't tell where the bot is in {', '.join(problems)} (inside {path}): each needs exactly one "
+                    "bot.py, or a subdir column in entries.csv. Fix or remove them so nobody is left out."
+                )
             if not found:
                 raise BotLoadError(f"no bots found in {path}")
         else:

@@ -71,17 +71,15 @@ def collect(entries_csv: str | Path, out_dir: str | Path, ref: str | None = None
                     _git("checkout", "--quiet", "--detach", default, cwd=dest)
                 info["commit"] = _git("rev-parse", "HEAD", cwd=dest)
                 info["commit_date"] = _git("log", "-1", "--format=%cI", cwd=dest)
-                bot_dir = dest / row["subdir"] if row.get("subdir") else dest
             elif source.lower().endswith(".zip"):
-                bot_dir = extract_zip(Path(source), dest)
+                extract_zip(Path(source), dest)
             else:
                 if dest.exists():
                     shutil.rmtree(dest)
                 shutil.copytree(source, dest, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv", "venv"))
-                bot_dir = dest
-            root = find_bot_root(bot_dir)
+            root = find_bot_root(dest / row["subdir"] if row.get("subdir") else dest)
             if root is None:
-                raise BotLoadError("no bot.py found")
+                raise BotLoadError("no bot.py found (or several: add a subdir column saying which)")
             info["bot_dir"] = str(root)
             detail = f" @ {info['commit'][:8]} ({info['commit_date'][:16]})" if "commit" in info else ""
             echo(f"  OK    {name}: {source}{detail}")

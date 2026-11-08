@@ -4,6 +4,7 @@ import zipfile
 
 from poker_tournament.cli import main
 from poker_tournament.loader import BUILTIN_BOTS
+from poker_tournament.tournament import discover_entries
 
 
 def test_validate_example_bots():
@@ -56,10 +57,15 @@ def test_collect_from_git_zip_and_folder(tmp_path):
     entries = tmp_path / "entries.csv"
     with open(entries, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["name", "source", "ref"])
-        writer.writerow(["alice", (repo / ".git").as_posix(), "round-1"])
-        writer.writerow(["bob", str(bob_zip), ""])
-        writer.writerow(["carol", str(BUILTIN_BOTS / "equity_bot"), ""])
+        writer.writerow(["name", "source", "ref", "subdir"])
+        writer.writerow(["alice", (repo / ".git").as_posix(), "round-1", ""])
+        writer.writerow(["bob", str(bob_zip), "", ""])
+        writer.writerow(["carol", str(BUILTIN_BOTS / "equity_bot"), "", ""])
+        writer.writerow(["dave", str(BUILTIN_BOTS), "", "calling_station"])  # several bots: subdir picks one
     assert main(["collect", str(entries), "--out", str(out)]) == 0
     for name in ("alice", "bob", "carol"):
         assert (out / name / "bot.py").exists()
+
+    found = {e.name: e.path for e in discover_entries([out])}
+    assert sorted(found) == ["alice", "bob", "carol", "dave"]
+    assert found["dave"] == (out / "dave" / "calling_station").resolve()
