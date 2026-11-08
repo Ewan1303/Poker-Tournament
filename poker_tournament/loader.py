@@ -2,10 +2,13 @@
 
 A bot folder holds bot.py, which defines a class called Bot (normally a
 subclass of PokerBot), plus any model files and helper modules it needs.
+bot.py can also set NAME, STYLE and DESCRIPTION strings at the top: the
+name and blurb shown in `poker play`, `poker watch` and `poker bots`.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import itertools
 import shutil
@@ -94,6 +97,35 @@ def resolve_bot(spec: str | Path) -> Path:
     if root is None:
         raise BotLoadError(f"{spec} has no bot.py")
     return root.resolve()
+
+
+def bot_info(bot_dir: str | Path) -> dict:
+    """A bot's profile: {"id", "name", "style", "description"}.
+
+    Read from NAME, STYLE and DESCRIPTION strings at the top of bot.py without
+    running it. The name falls back to the folder name and the description to
+    the first paragraph of bot.py's docstring.
+    """
+    bot_dir = Path(bot_dir)
+    info = {"id": bot_dir.name, "name": bot_dir.name, "style": "", "description": ""}
+    try:
+        tree = ast.parse((bot_dir / "bot.py").read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return info
+    docstring = ast.get_docstring(tree)
+    if docstring:
+        info["description"] = " ".join(docstring.split("\n\n")[0].split())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            key = node.targets[0].id
+            if key in ("NAME", "STYLE", "DESCRIPTION"):
+                try:
+                    value = ast.literal_eval(node.value)
+                except (ValueError, TypeError, SyntaxError):
+                    continue
+                if isinstance(value, str) and value.strip():
+                    info[key.lower()] = " ".join(value.split())
+    return info
 
 
 def iter_bot_files(folder: Path) -> Iterator[Path]:

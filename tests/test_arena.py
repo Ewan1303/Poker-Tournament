@@ -55,7 +55,7 @@ def test_playing_hides_bot_cards_until_showdown_and_compares():
     finally:
         session.stop()
     names = {row["name"] for row in snap["comparison"]["rows"]}
-    assert names == {"You", "equity_bot", "calling_station"}
+    assert names == {"You", "Professor Odds", "Callie"}  # bots go by their NAME
     you = next(row for row in snap["scoreboard"]["rows"] if row["you"])
     assert you["total"] == next(row for row in snap["comparison"]["rows"] if row["you"])["total"]
     assert sum(row["total"] for row in snap["scoreboard"]["rows"]) == 0  # chips only move between players
@@ -106,7 +106,7 @@ def test_pause_and_step():
         assert len(snap["log"]) == len(frozen) + 1  # exactly one action
     finally:
         session.stop()
-    assert snap["seats"][0]["name"] == "calling_station" and snap["seats"][1]["name"] == "calling_station 2"
+    assert snap["seats"][0]["name"] == "Callie" and snap["seats"][1]["name"] == "Callie 2"
 
 
 def test_bad_settings_are_rejected():
@@ -151,6 +151,8 @@ def test_web_server(tmp_path):
 
         status, bots = request(base, "/api/bots")
         assert {b["name"] for b in bots["bots"]} == set(AVAILABLE)
+        randy = next(b for b in bots["bots"] if b["name"] == "random_bot")
+        assert randy["display"] == "Randy" and randy["style"] and randy["description"]
 
         status, snap = request(base, "/api/start", {"mode": "play", "bots": ["calling_station"], "speed": "instant"})
         assert status == 200 and snap["mode"] == "play" and snap["seats"][0]["you"]

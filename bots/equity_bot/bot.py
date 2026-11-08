@@ -5,6 +5,13 @@ import random
 
 from poker_tournament import Action, PokerBot, estimate_equity
 
+NAME = "Professor Odds"
+STYLE = "By the numbers"
+DESCRIPTION = (
+    "Simulates the rest of the hand to work out his chance of winning, and only puts chips in "
+    "when the price is right. Solid but predictable: he rarely bluffs, so his big bets mean it."
+)
+
 
 class Bot(PokerBot):
     ITERATIONS = 300  # more is more accurate but slower

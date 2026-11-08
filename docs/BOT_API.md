@@ -11,6 +11,18 @@ alice/
 
 For each half of each match, and for each sit-and-go game, the tournament starts a **fresh Python process** for your bot. That process imports `bot.py` and creates `Bot()`. Its working directory is the bot folder, but it's safer to build paths from `Path(__file__).parent`. `print()` output goes to a log file the organizer can read, not to the game.
 
+## Naming your bot
+
+Optionally, set three strings at the top of `bot.py` to give your bot a personality:
+
+```python
+NAME = "The Shark"
+STYLE = "Tight-aggressive"
+DESCRIPTION = "Folds most hands, then bets hard when it plays. Hard to bluff."
+```
+
+`poker play` and `poker watch` show the name at the table, with the style and description in the bot picker and when you hover over the seat. `poker bots` lists them too. They're read straight from the file without running it, so they must be plain strings. Without them, the folder name is used, and the first paragraph of the file's docstring becomes the description. Tournament leaderboards always use the folder (or zip) name.
+
 ## Lifecycle
 
 ```python

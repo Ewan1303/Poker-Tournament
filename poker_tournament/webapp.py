@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .arena import SessionConfig, TableSession
+from .loader import bot_info
 from .tournament import summarize_saved
 
 WEB = Path(__file__).parent / "web"
@@ -60,8 +61,20 @@ class App:
             self.session.stop()
 
     def bots(self) -> list[dict]:
-        rows = [{"name": name, "builtin": name in self.builtin} for name in self.available]
-        return sorted(rows, key=lambda row: (row["builtin"], row["name"].lower()))
+        """Every bot you can seat: its id ("name"), display name, style and description."""
+        rows = []
+        for name, path in self.available.items():
+            info = bot_info(path)
+            rows.append(
+                {
+                    "name": name,
+                    "builtin": name in self.builtin,
+                    "display": info["name"],
+                    "style": info["style"],
+                    "description": info["description"],
+                }
+            )
+        return sorted(rows, key=lambda row: (row["builtin"], row["display"].lower()))
 
     def runs(self) -> list[dict]:
         if not self.results_dir or not self.results_dir.is_dir():

@@ -300,6 +300,7 @@ table.score th { color: var(--muted); font-weight: 500; font-size: 12px; }
 table.score td:first-child, table.score th:first-child { text-align: left; width: 18px; color: var(--muted); }
 table.score td.who, table.score th.who { text-align: left; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
 table.score tr.you td.who { color: var(--blue); font-weight: 700; }
+table.score td.who small { display: block; color: var(--muted); font-size: 11px; line-height: 1.2; }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 .dim { color: var(--muted); }
@@ -370,6 +371,7 @@ dialog {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 40px);
   margin: 6vh auto auto; /* pinned near the top, so options don't jump as sections show and hide */
+  overflow-y: auto;
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 dialog h2 { margin: 0 0 14px; }
@@ -384,6 +386,16 @@ fieldset { border: 0; padding: 0; margin: 14px 0 0; }
 legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
 legend small { color: var(--muted); font-weight: 400; }
 .bot-list { display: flex; flex-wrap: wrap; gap: 6px; }
+#bot-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }
+.bot-card { position: relative; display: block; cursor: pointer; }
+.bot-card input { position: absolute; top: 11px; right: 11px; accent-color: var(--gold); }
+.bot-card span { display: block; height: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 9px 34px 9px 12px; background: var(--panel-2); }
+.bot-card b { display: block; font-size: 14px; }
+.bot-card em { font-style: normal; color: var(--gold); font-size: 12px; margin-right: 6px; }
+.bot-card em.yours { color: var(--blue); }
+.bot-card small { display: block; color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 4px; }
+.bot-card code { display: block; color: #5d6b7d; font-size: 11px; margin-top: 5px; }
+.bot-card input:checked + span { border-color: var(--gold); box-shadow: 0 0 0 1px rgba(240, 192, 80, 0.5); }
 .bot-pick { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px 4px 8px; background: var(--panel-2); cursor: pointer; }
 .bot-pick small { color: var(--muted); }
 fieldset.numbers { display: flex; gap: 12px; flex-wrap: wrap; }

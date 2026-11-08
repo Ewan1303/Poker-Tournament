@@ -56,6 +56,18 @@ poker run bots my_bots/alice
 
 The first command plays a duplicate match. The second runs a small tournament against every bot in [bots/](bots).
 
+## The built-in bots
+
+Eight simple opponents with personalities, each one testing a different weakness. None of them is meant to win; a good bot should beat them all.
+
+| | | |
+|---|---|---|
+| **Randy** (`random_bot`) does anything at random | **Callie** (`calling_station`) calls everything | **Maniac Max** (`maniac`) raises nearly every hand |
+| **Rocky** (`rock`) plays only premium hands | **Bluffing Bella** (`bluffer`) bets whenever nobody else has | **Nervous Nick** (`fit_or_fold`) folds unless the flop hits him |
+| **Professor Odds** (`equity_bot`) bets when the odds are right | **Lenny the Learner** (`ml_example`) the machine-learning example | |
+
+`poker bots` describes each one and how to beat it, and so does [bots/README.md](bots/README.md).
+
 **4. Check it** the way the organizer will:
 
 ```bash
@@ -80,7 +92,7 @@ Every bot in `bots/` and in your `my_bots/` folder is available, or you can name
 
 ![Playing against the bots](docs/images/play.jpg)
 
-**How do you compare?** In a cash game, every hand you play is replayed in the background with each bot sitting in your seat, against its own copies of the same opponents with exactly the same cards. The *Same cards, same seat* panel adds those results up, so you can see whether you played your hands better than equity_bot would have. It's the same idea as the tournament's duplicate format, applied to you.
+**How do you compare?** In a cash game, every hand you play is replayed in the background with each bot sitting in your seat, against its own copies of the same opponents with exactly the same cards. The *Same cards, same seat* panel adds those results up, so you can see whether you played your hands better than Professor Odds would have. It's the same idea as the tournament's duplicate format, applied to you. Hover over a seat to see that bot's description.
 
 ![Tournament results](docs/images/results.jpg)
 
@@ -135,7 +147,7 @@ Organizers: see [ORGANIZER.md](ORGANIZER.md) for collecting submissions, running
 | Path | What it is |
 |---|---|
 | [poker_tournament/](poker_tournament) | The engine, hand evaluator, bot sandbox, tournament runner and the `poker` command; `web/` and `arena.py` are the browser table |
-| [bots/](bots) | Built-in bots: `random_bot`, `calling_station`, `equity_bot` (rule-based) and `ml_example` |
+| [bots/](bots) | Eight built-in test opponents with personalities, from Randy (random) to Professor Odds (rule-based) and Lenny (machine learning) |
 | [templates/starter_bot/](templates/starter_bot) | What `poker new` copies |
 | [docs/](docs) | Bot API reference and machine-learning guide |
 | [results/](results) | Leaderboards from each round |

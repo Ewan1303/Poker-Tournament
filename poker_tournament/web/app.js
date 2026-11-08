@@ -116,12 +116,13 @@ function tableMessage(snap) {
   if (snap.status === "error") return "Something went wrong: see the hand log.";
   if (snap.status === "finished") {
     const winner = snap.scoreboard.rows.find((row) => row.place === 1);
-    return winner ? `${winner.name} wins the sit-and-go!` : "Game over";
+    if (!winner) return "Game over";
+    return winner.you ? "You won the sit-and-go!" : `${winner.name} wins the sit-and-go!`;
   }
   if (snap.status === "your_turn") return snap.you.to_call ? `Your turn: ${fmt(snap.you.to_call)} to call` : "Your turn";
   if (snap.status === "hand_over" && snap.result) {
     return snap.result.winners
-      .map((w) => `${w.name} wins ${fmt(w.amount)}${w.hand_name ? ` with ${HAND_PHRASES[w.hand_name]}` : ""}`)
+      .map((w) => `${w.name} ${w.name.toLowerCase() === "you" ? "win" : "wins"} ${fmt(w.amount)}${w.hand_name ? ` with ${HAND_PHRASES[w.hand_name]}` : ""}`)
       .join(" · ");
   }
   const turn = snap.seats.find((seat) => seat.turn);
@@ -175,6 +176,7 @@ function renderSeats(snap) {
       out && "out",
       over && winners.has(seat.seat) && "winner",
     ].filter(Boolean).join(" ");
+    el.title = seat.description ? `${seat.name}${seat.style ? ` · ${seat.style}` : ""}\n${seat.description}` : seat.name;
     setHTML(el.querySelector(".hole"), (seat.cards || []).map((code) => card(code)).join(""));
     const warn = seat.errors ? ` <span class="neg" title="errors or timeouts">⚠ ${seat.errors}</span>` : "";
     const tag = seat.you && seat.name.toLowerCase() !== "you" ? '<span class="tag">you</span>' : "";
@@ -319,6 +321,13 @@ document.addEventListener("keydown", (event) => {
 
 // -- side panels ---------------------------------------------------------------
 
+function who(snap, row) {
+  // A player's name, with their style underneath and their description on hover.
+  const seat = snap.seats[row.seat] || {};
+  const style = seat.style ? `<small>${esc(seat.style)}</small>` : "";
+  return `<td class="who" title="${esc(seat.description || "")}">${esc(row.name)}${style}</td>`;
+}
+
 function renderScoreboard(snap) {
   const board = snap.scoreboard;
   let html;
@@ -326,7 +335,7 @@ function renderScoreboard(snap) {
     $("#score-title").textContent = `Scoreboard · ${fmt(board.hands)} hand${board.hands === 1 ? "" : "s"}`;
     html = `<table class="score"><tr><th></th><th class="who">Player</th><th>Chips</th><th title="Big blinds won per 100 hands">bb/100</th></tr>`;
     board.rows.forEach((row, i) => {
-      html += `<tr class="${row.you ? "you" : ""}"><td>${i + 1}</td><td class="who">${esc(row.name)}</td>
+      html += `<tr class="${row.you ? "you" : ""}"><td>${i + 1}</td>${who(snap, row)}
         <td class="${tone(row.total)}">${signed(row.total)}</td><td class="${tone(row.bb_per_100)}">${row.bb_per_100.toFixed(1)}</td></tr>`;
     });
   } else {
@@ -334,7 +343,7 @@ function renderScoreboard(snap) {
     html = `<table class="score"><tr><th></th><th class="who">Player</th><th>Chips</th></tr>`;
     board.rows.forEach((row, i) => {
       const chips = row.place != null ? `<span class="dim">${row.place === 1 ? "Winner" : `Out · ${ordinal(row.place)}`}</span>` : fmt(row.stack);
-      html += `<tr class="${row.you ? "you" : ""}"><td>${i + 1}</td><td class="who">${esc(row.name)}</td><td>${chips}</td></tr>`;
+      html += `<tr class="${row.you ? "you" : ""}"><td>${i + 1}</td>${who(snap, row)}<td>${chips}</td></tr>`;
     });
   }
   setHTML($("#scoreboard"), html + "</table>");
@@ -381,8 +390,14 @@ const setup = $("#setup");
 const form = $("#setup-form");
 
 function pick(name, bot, checked) {
-  return `<label class="bot-pick"><input type="checkbox" name="${name}" value="${esc(bot.name)}" ${checked ? "checked" : ""}>
-    ${esc(bot.name)}${bot.builtin ? "" : " <small>yours</small>"}</label>`;
+  return `<label class="bot-pick" title="${esc(bot.description)}"><input type="checkbox" name="${name}" value="${esc(bot.name)}" ${checked ? "checked" : ""}>
+    ${esc(bot.display)}${bot.builtin ? "" : " <small>yours</small>"}</label>`;
+}
+
+function botCard(bot, checked) {
+  return `<label class="bot-card"><input type="checkbox" name="bots" value="${esc(bot.name)}" ${checked ? "checked" : ""}>
+    <span><b>${esc(bot.display)}</b>${bot.style ? `<em>${esc(bot.style)}</em>` : ""}${bot.builtin ? "" : '<em class="yours">yours</em>'}
+    ${bot.description ? `<small>${esc(bot.description)}</small>` : ""}<code>${esc(bot.name)}</code></span></label>`;
 }
 
 async function openSetup() {
@@ -390,7 +405,7 @@ async function openSetup() {
   const config = state?.config || {};
   form.elements.mode.value = config.mode || "play";
   form.elements.format.value = config.format || "cash";
-  $("#bot-list").innerHTML = botList.map((bot) => pick("bots", bot, (config.bots || []).includes(bot.name))).join("");
+  $("#bot-list").innerHTML = botList.map((bot) => botCard(bot, (config.bots || []).includes(bot.name))).join("");
   $("#compare-list").innerHTML = botList.map((bot) => pick("compare", bot, (config.compare || []).includes(bot.name))).join("");
   for (const key of ["player_name", "stack", "small_blind", "big_blind", "hands_per_level"]) {
     form.elements[key].value = config[key] ?? "";

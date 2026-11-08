@@ -202,7 +202,9 @@ def _cmd_table(args) -> int:
     if len(chosen) > room:
         print(f"Only {room} bots fit at the table, so seating: {', '.join(chosen[:room])}")
         chosen = chosen[:room]
-    compare = list(dict.fromkeys(chosen + list(builtin)))[:MAX_COMPARE]
+    # Compare yourself with your own bots first, then the built-in ones.
+    preferred = [b for b in chosen if b not in builtin] + [b for b in chosen if b in builtin] + list(builtin)
+    compare = list(dict.fromkeys(preferred))[:MAX_COMPARE]
     config = SessionConfig(
         mode=mode,
         format=args.format,
@@ -219,6 +221,38 @@ def _cmd_table(args) -> int:
     if args.command == "results":
         app.session.control(paused=True)  # just looking at results: don't spend CPU on a table
     serve(app, port=args.port, open_browser=not args.no_browser, page="#results" if args.command == "results" else "")
+    return 0
+
+
+def _cmd_bots(args) -> int:
+    """poker bots: who's who among the bots you can play against."""
+    import textwrap
+
+    from .loader import BUILTIN_BOTS, bot_info, find_bot_root
+    from .tournament import discover_entries
+
+    # (what to type in commands, the bot's folder) for each group
+    sections = [("Built-in bots", [(p.name, p) for p in sorted(BUILTIN_BOTS.iterdir()) if (p / "bot.py").is_file()])]
+    mine = Path("my_bots")
+    if mine.is_dir():
+        found = [(f"my_bots/{p.name}", find_bot_root(p)) for p in sorted(mine.iterdir()) if p.is_dir()]
+        sections.append(("Your bots", [(label, root) for label, root in found if root]))
+    if args.paths:
+        sections.append(("Other bots", [(e.name, e.path) for e in discover_entries(args.paths)]))
+    for title, bots in sections:
+        print(title)
+        for label, path in bots:
+            info = bot_info(path)
+            line = f"  {label}"
+            if info["name"] != info["id"]:
+                line += f" - {info['name']}"
+            if info["style"]:
+                line += f" ({info['style']})"
+            print(line)
+            if info["description"]:
+                print(textwrap.fill(info["description"], width=90, initial_indent="      ", subsequent_indent="      "))
+        print()
+    print("Use the names on the left in any command, e.g.  poker match my_bots/alice maniac")
     return 0
 
 
@@ -320,6 +354,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("results", help="look at tournament leaderboards in your browser")
     table_options(p, "normal")
+
+    p = sub.add_parser("bots", help="list the bots you can play against, with how each one plays")
+    p.add_argument("paths", nargs="*", help="other bot folders or a submissions folder to include")
+    p.set_defaults(func=_cmd_bots)
 
     p = sub.add_parser("collect", help="fetch submissions listed in a CSV (git repos, zips, folders)")
     p.add_argument("entries", help="CSV with columns name,source[,ref][,subdir]")

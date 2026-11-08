@@ -24,7 +24,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       - run: pytest -q
-      - run: poker validate bots/random_bot bots/calling_station bots/equity_bot bots/ml_example
+      - run: poker validate bots
 
   docker:
     runs-on: ubuntu-latest

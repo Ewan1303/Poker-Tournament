@@ -15,6 +15,13 @@ from poker_tournament.features import HAND_FEATURE_NAMES, hand_features
 
 MODEL = Path(__file__).parent / "model.npz"  # build paths from __file__, not the working directory
 
+NAME = "Lenny the Learner"
+STYLE = "Machine learning"
+DESCRIPTION = (
+    "Learned how strong his hand is from 200,000 practice hands (see train.py), then bets by "
+    "simple rules. Quick to decide, but he never bluffs and never adjusts to you."
+)
+
 
 class Bot(PokerBot):
     def __init__(self):

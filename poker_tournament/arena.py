@@ -30,12 +30,13 @@ from .api import normalize_action
 from .cards import cards_to_strs
 from .engine import STREETS, Hand
 from .evaluator import evaluate, hand_name
+from .loader import bot_info
 from .match import SNG_LEVELS, HandLog, assign_places, big_blind_of, deal_deck, next_button, play_hand
 from .players import BotPlayer, LocalBot
 
 SPEEDS = {"slow": 1.6, "normal": 0.8, "fast": 0.3, "turbo": 0.05, "instant": 0.0}  # seconds per bot decision
 MAX_SEATS = 10
-MAX_COMPARE = 6
+MAX_COMPARE = 8
 
 
 @dataclass
@@ -174,6 +175,7 @@ class TableSession:
         play = config.mode == "play"
         self.your_seat = 0 if play else None
         self.bot_names: list[str | None] = ([None] if play else []) + list(config.bots)
+        self.profiles = {spec: bot_info(available[spec]) for spec in set(config.bots) | set(config.compare)}
         self.names = self._seat_names()
         n = len(self.names)
         self.players: list[BotPlayer | None] = [None] * n
@@ -251,9 +253,13 @@ class TableSession:
             seats = []
             for seat, name in enumerate(self.names):
                 player = self.players[seat]
+                profile = self.profiles.get(self.bot_names[seat]) or {}
                 row = {
                     "seat": seat,
                     "name": name,
+                    "bot": self.bot_names[seat],
+                    "style": profile.get("style", ""),
+                    "description": profile.get("description", ""),
                     "you": seat == self.your_seat,
                     "stack": self.stacks[seat],
                     "bet": 0,
@@ -369,9 +375,10 @@ class TableSession:
     # -- the game -------------------------------------------------------------
 
     def _seat_names(self) -> list[str]:
+        """Display names: yours, then each bot's NAME (Randy, Callie...), numbered if repeated."""
         names: list[str] = []
         for spec in self.bot_names:
-            base = self.config.player_name if spec is None else spec
+            base = self.config.player_name if spec is None else self.profiles[spec]["name"]
             name, copy = base, 2
             while name.lower() in (n.lower() for n in names):
                 name = f"{base} {copy}"
@@ -450,8 +457,9 @@ class TableSession:
             player.match_start(dict(info, your_name=player.name, your_seat=seat))
             self.players[seat] = player
         if self.config.mode == "play" and self.config.format == "cash":
-            for name in self.config.compare:
-                shadow = _Shadow(name, self.available[name], seat_paths, self.names, self.your_seat)
+            for spec in self.config.compare:
+                name = self.profiles[spec]["name"]
+                shadow = _Shadow(name, self.available[spec], seat_paths, self.names, self.your_seat)
                 if shadow.start(info):
                     self.shadows.append(shadow)
                 else:
@@ -519,7 +527,8 @@ class TableSession:
             self.result = self._summarize(hand, active)
             for winner in self.result["winners"]:
                 with_hand = f" with {_PHRASES[winner['hand_name']]}" if winner["hand_name"] else ""
-                self._note(f"{winner['name']} wins {winner['amount']:,}{with_hand}", "win")
+                verb = "win" if winner["name"].lower() == "you" else "wins"
+                self._note(f"{winner['name']} {verb} {winner['amount']:,}{with_hand}", "win")
             if cfg.format == "sng":
                 self._place_busted(active, starting)
             self.status = "hand_over"
@@ -585,7 +594,8 @@ class TableSession:
         with self._cond:
             assign_places(self.places, alive, 1, lambda seat: self.stacks[seat])
             if alive:
-                self._note(f"{self.names[alive[0]]} wins the sit-and-go!", "win")
+                winner = "You won" if alive[0] == self.your_seat else f"{self.names[alive[0]]} wins"
+                self._note(f"{winner} the sit-and-go!", "win")
             self.status = "finished"
             self._publish()
         self._stop.wait()

@@ -15,6 +15,12 @@ from poker_tournament import Action, PokerBot, estimate_equity
 
 HERE = Path(__file__).parent  # put model files next to this one and load them via HERE
 
+# Optional: how your bot introduces itself in `poker play`, `poker watch` and `poker bots`.
+# Leave NAME as None to use the folder name.
+NAME = None
+STYLE = "Plays the odds"
+DESCRIPTION = "Calls when the odds are good enough and raises strong hands."
+
 
 class Bot(PokerBot):
     def __init__(self):

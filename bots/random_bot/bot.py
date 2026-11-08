@@ -4,6 +4,13 @@ import random
 
 from poker_tournament import Action, PokerBot
 
+NAME = "Randy"
+STYLE = "Random"
+DESCRIPTION = (
+    "Does whatever pops into his head: folds, calls and raises completely at random, "
+    "now and then shoving all in. A sanity check: any real bot should beat him easily."
+)
+
 
 class Bot(PokerBot):
     def __init__(self):
